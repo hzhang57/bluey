@@ -28,8 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wan-checkpoint", required=True)
     parser.add_argument(
         "--wan-repo",
-        default=".",
-        help="Path to the official Wan2.2 source repository.",
+        default=None,
+        help="Official Wan2.2 source repository. Auto-detected when omitted.",
     )
     parser.add_argument("--output-dir", default="outputs/mask_tracking")
     parser.add_argument("--strength", type=float, default=0.45)
@@ -106,7 +106,7 @@ def main() -> None:
         "object": args.object_text,
         "prompt": prompt,
         "video": str(Path(args.video).resolve()),
-        "wan_repo": str(Path(args.wan_repo).resolve()),
+        "wan_repo": str(pipeline.wan_repo),
         "wan_checkpoint": str(Path(args.wan_checkpoint).resolve()),
         "parameters": vars(args),
         "preprocessing": preprocessing,

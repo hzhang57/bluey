@@ -12,8 +12,22 @@ requirements, download `Wan-AI/Wan2.2-TI2V-5B`, then install this project's
 requirements:
 
 ```bash
+git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git
+pip install -r Wan2.2/requirements.txt
 pip install -r requirements.txt
 ```
+
+On Kaggle, run:
+
+```bash
+cd /kaggle/working
+git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git
+pip install -r /kaggle/working/Wan2.2/requirements.txt
+```
+
+`--wan-repo` is optional when the repository is located at
+`/kaggle/working/Wan2.2`, next to this project, or specified through the
+`WAN_REPO` environment variable.
 
 ## Run
 

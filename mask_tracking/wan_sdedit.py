@@ -2,15 +2,60 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 
 
-def add_wan_repo_to_path(wan_repo: str | Path) -> None:
-    repo = str(Path(wan_repo).expanduser().resolve())
+def resolve_wan_repo(
+    wan_repo: str | Path | None = None,
+    checkpoint_dir: str | Path | None = None,
+) -> Path:
+    candidates = []
+    if wan_repo:
+        candidates.append(Path(wan_repo))
+    if os.environ.get("WAN_REPO"):
+        candidates.append(Path(os.environ["WAN_REPO"]))
+    if checkpoint_dir:
+        checkpoint = Path(checkpoint_dir).expanduser()
+        candidates.extend([checkpoint, checkpoint.parent, checkpoint.parent / "Wan2.2"])
+    candidates.extend(
+        [
+            Path.cwd(),
+            Path.cwd() / "Wan2.2",
+            Path.cwd().parent / "Wan2.2",
+            Path("/kaggle/working/Wan2.2"),
+        ]
+    )
+
+    checked = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in checked:
+            continue
+        checked.append(resolved)
+        if (resolved / "wan" / "__init__.py").is_file():
+            return resolved
+
+    locations = "\n".join(f"  - {path}" for path in checked)
+    raise FileNotFoundError(
+        "Could not find the official Wan2.2 source repository.\n"
+        "Clone it, then pass --wan-repo or set WAN_REPO:\n"
+        "  git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git "
+        "/kaggle/working/Wan2.2\n"
+        "  pip install -r /kaggle/working/Wan2.2/requirements.txt\n"
+        "Searched:\n"
+        f"{locations}"
+    )
+
+
+def add_wan_repo_to_path(wan_repo: str | Path) -> Path:
+    resolved = Path(wan_repo).expanduser().resolve()
+    repo = str(resolved)
     if repo not in sys.path:
         sys.path.insert(0, repo)
+    return resolved
 
 
 class WanTI2VSDEdit:
@@ -18,16 +63,25 @@ class WanTI2VSDEdit:
 
     def __init__(
         self,
-        wan_repo: str,
+        wan_repo: str | None,
         checkpoint_dir: str,
         device_id: int = 0,
         t5_cpu: bool = False,
         convert_model_dtype: bool = True,
     ):
-        add_wan_repo_to_path(wan_repo)
+        self.wan_repo = add_wan_repo_to_path(
+            resolve_wan_repo(wan_repo, checkpoint_dir)
+        )
         import torch
-        import wan
-        from wan.configs import WAN_CONFIGS
+        try:
+            import wan
+            from wan.configs import WAN_CONFIGS
+        except ModuleNotFoundError as error:
+            raise ModuleNotFoundError(
+                f"Found Wan2.2 at {self.wan_repo}, but its Python dependencies "
+                "are incomplete. Install them with:\n"
+                f"  pip install -r {self.wan_repo / 'requirements.txt'}"
+            ) from error
 
         if not torch.cuda.is_available():
             raise RuntimeError("Wan2.2-TI2V-5B SDEdit requires a CUDA GPU")

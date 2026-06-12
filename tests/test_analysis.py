@@ -1,9 +1,12 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
 from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
 from mask_tracking.prompting import build_silhouette_prompt
+from mask_tracking.wan_sdedit import resolve_wan_repo
 
 
 class PromptTests(unittest.TestCase):
@@ -36,6 +39,21 @@ class AnalysisTests(unittest.TestCase):
         metrics = temporal_metrics(masks)
         self.assertEqual(metrics["mean_consecutive_iou"], 1.0)
         self.assertEqual(metrics["mean_flicker_rate"], 0.0)
+
+
+class WanRepoTests(unittest.TestCase):
+    def test_resolves_explicit_wan_repo(self):
+        with TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / "wan").mkdir()
+            (repo / "wan" / "__init__.py").touch()
+            self.assertEqual(resolve_wan_repo(repo), repo.resolve())
+
+    def test_missing_repo_has_actionable_error(self):
+        with TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing"
+            with self.assertRaisesRegex(FileNotFoundError, "git clone"):
+                resolve_wan_repo(missing)
 
 
 if __name__ == "__main__":
