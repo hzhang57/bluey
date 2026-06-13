@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=float, default=24.0)
     parser.add_argument("--sampling-steps", type=int, default=30)
     parser.add_argument("--guide-scale", type=float, default=5.0)
+    parser.add_argument("--max-sequence-length", type=int, default=128)
     parser.add_argument("--white-threshold", type=int, default=220)
     parser.add_argument("--difference-threshold", type=float, default=35.0)
     parser.add_argument("--morphology-kernel", type=int, default=3)
@@ -71,6 +72,7 @@ def main() -> None:
         args.seed,
         sampling_steps=args.sampling_steps,
         guide_scale=args.guide_scale,
+        max_sequence_length=args.max_sequence_length,
     )
     masks = extract_silhouette_mask(
         source,

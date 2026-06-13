@@ -131,7 +131,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         )
         self.assertTrue(pipeline.registered_config["expand_timesteps"])
         pipeline.transformer.to.assert_called_once_with("cuda:0")
-        pipeline.text_encoder.to.assert_called_once_with("cuda:1")
+        pipeline.text_encoder.to.assert_called_once_with("cpu")
         self.assertEqual(pipeline.vae.moves[0], (("cpu",), {"dtype": FakeTorch.float16}))
         self.assertEqual(pipeline._vae_target_device, "cuda:1")
         self.assertTrue(pipeline.vae.slicing_enabled)
@@ -141,6 +141,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(args.frame_num, 49)
         self.assertEqual(args.size, "832*480")
         self.assertEqual(args.sampling_steps, 30)
+        self.assertEqual(args.max_sequence_length, 128)
 
     def test_cli_has_no_repository_or_checkpoint_flags(self):
         option_strings = {

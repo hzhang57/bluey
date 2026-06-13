@@ -40,7 +40,7 @@ def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=No
 
     transformer_device = torch_module.device("cuda:0")
     vae_device = torch_module.device("cuda:1" if torch_module.cuda.device_count() > 1 else "cuda:0")
-    text_device = vae_device if torch_module.cuda.device_count() > 1 else torch_module.device("cpu")
+    text_device = torch_module.device("cpu")
     pipe.transformer.to(transformer_device)
     pipe.vae.to("cpu", dtype=torch_module.float16)
     pipe.text_encoder.to(text_device)
@@ -83,11 +83,18 @@ def _clear_memory(torch_module: Any) -> None:
     torch_module.cuda.empty_cache()
 
 
-def _encode_prompt(pipe: Any, prompt: str, guide_scale: float, device: Any, dtype: Any) -> tuple:
+def _encode_prompt(
+    pipe: Any,
+    prompt: str,
+    guide_scale: float,
+    device: Any,
+    dtype: Any,
+    max_sequence_length: int,
+) -> tuple:
     prompt_embeds = pipe._get_t5_prompt_embeds(
         prompt=prompt,
         num_videos_per_prompt=1,
-        max_sequence_length=512,
+        max_sequence_length=max_sequence_length,
         device=pipe.text_encoder.device,
         dtype=pipe.text_encoder.dtype,
     ).to(device=device, dtype=dtype)
@@ -96,7 +103,7 @@ def _encode_prompt(pipe: Any, prompt: str, guide_scale: float, device: Any, dtyp
         negative_embeds = pipe._get_t5_prompt_embeds(
             prompt="",
             num_videos_per_prompt=1,
-            max_sequence_length=512,
+            max_sequence_length=max_sequence_length,
             device=pipe.text_encoder.device,
             dtype=pipe.text_encoder.dtype,
         ).to(device=device, dtype=dtype)
@@ -125,6 +132,7 @@ class WanTI2VSDEdit:
         seed: int,
         sampling_steps: int = 30,
         guide_scale: float = 5.0,
+        max_sequence_length: int = 128,
     ) -> np.ndarray:
         torch, pipe = self.torch, self.pipeline
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
@@ -134,9 +142,18 @@ class WanTI2VSDEdit:
         transformer_dtype = pipe.transformer.dtype
         frames, height, width = source_video.shape[:3]
 
-        print("[stage 1/5] Encoding text prompt...", flush=True)
+        print(
+            "[stage 1/5] Encoding text prompt on CPU "
+            f"(max_sequence_length={max_sequence_length}; this may take several minutes)...",
+            flush=True,
+        )
         prompt_embeds, negative_embeds = _encode_prompt(
-            pipe, prompt, guide_scale, transformer_device, transformer_dtype
+            pipe,
+            prompt,
+            guide_scale,
+            transformer_device,
+            transformer_dtype,
+            max_sequence_length,
         )
         text_encoder = pipe.text_encoder
         pipe.text_encoder = None
