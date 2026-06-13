@@ -1,6 +1,9 @@
 torch>=2.4.0
 torchvision>=0.19.0
+diffusers>=0.38.0
+transformers
+accelerate
+sentencepiece
 opencv-python>=4.9.0.80
 imageio[ffmpeg]>=2.34.0
 numpy>=1.23.5,<2
-tqdm

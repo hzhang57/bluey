@@ -1,33 +1,26 @@
 # Mask Tracking as an Emergent Capability of Wan2.2
 
-This experiment probes whether a frozen `Wan2.2-TI2V-5B` can keep a local
-silhouette edit attached to a text-specified object over time. It adds a
-research-only source-video Latent SDEdit adapter to the official Wan inference
-code. No detector, segmentation model, optical flow, or tracker is used.
+This experiment probes whether a frozen video editing model can keep a local
+white silhouette edit attached to a text-specified object over time. It uses
+Diffusers `WanVideoToVideoPipeline` with the fixed model:
+
+```text
+Wan-AI/Wan2.2-TI2V-5B-Diffusers
+```
+
+No detector, segmentation model, optical flow, tracker, or Wan2.2 GitHub clone
+is used.
 
 ## Setup
 
-On a CUDA machine, clone the official Wan2.2 repository, install its
-requirements, download `Wan-AI/Wan2.2-TI2V-5B`, then install this project's
-requirements:
+On a Kaggle CUDA notebook:
 
 ```bash
-git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git
-pip install -r Wan2.2/requirements.txt
-pip install -r requirements.txt
+%cd /kaggle/working/bluey
+!pip install -r requirements.txt
 ```
 
-On Kaggle, run:
-
-```bash
-cd /kaggle/working
-git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git
-pip install -r /kaggle/working/Wan2.2/requirements.txt
-```
-
-`--wan-repo` is optional when the repository is located at
-`/kaggle/working/Wan2.2`, next to this project, or specified through the
-`WAN_REPO` environment variable.
+The first run downloads the fixed Diffusers model from Hugging Face.
 
 ## Run
 
@@ -35,8 +28,6 @@ pip install -r /kaggle/working/Wan2.2/requirements.txt
 python run_mask_tracking.py \
   --video input.mp4 \
   --object "the red car" \
-  --wan-repo /path/to/Wan2.2 \
-  --wan-checkpoint /path/to/Wan2.2-TI2V-5B \
   --strength 0.45 \
   --seed 42 \
   --output-dir outputs/red_car
@@ -45,7 +36,7 @@ python run_mask_tracking.py \
 `--object` accepts an arbitrary referring expression. A run processes one
 continuous clip of `--frame-num` frames, which must have the form `4n+1`.
 Short clips are padded with their final frame. Use `--start-frame` for another
-window. Wan2.2-TI2V-5B natively supports `1280*704` and `704*1280`.
+window. Supported sizes are `1280*704` and `704*1280`.
 
 For a small sweep:
 
@@ -55,8 +46,6 @@ for strength in 0.30 0.45 0.60; do
     python run_mask_tracking.py \
       --video input.mp4 \
       --object "the red car" \
-      --wan-repo /path/to/Wan2.2 \
-      --wan-checkpoint /path/to/Wan2.2-TI2V-5B \
       --strength "$strength" \
       --seed "$seed" \
       --output-dir "outputs/red_car_s${strength}_seed${seed}"
@@ -75,4 +64,3 @@ object through motion and occlusion while leaving the background unchanged.
 The generated mask is extracted only from pixels that became white relative to
 the source. The metrics measure output stability, not segmentation accuracy;
 without ground-truth masks this remains a discovery probe.
-# bluey
