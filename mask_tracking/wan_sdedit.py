@@ -5,7 +5,7 @@ import importlib.metadata
 import importlib.util
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -20,6 +20,9 @@ class SDEditResult:
     generated_raw: np.ndarray
     vae_roundtrip: np.ndarray
     diagnostics: dict[str, Any]
+
+
+SnapshotCallback = Callable[[str, np.ndarray, dict[str, Any]], None]
 
 
 def check_pipeline_dependencies() -> None:
@@ -42,6 +45,12 @@ def noise_strength_to_start_idx(strength: float, steps: int) -> int:
 
 def denoise_step_count(strength: float, steps: int) -> int:
     return steps - noise_strength_to_start_idx(strength, steps)
+
+
+def should_save_denoise_snapshot(step: int, total_steps: int, every: int) -> bool:
+    if every < 1:
+        raise ValueError("snapshot interval must be positive")
+    return step % every == 0 or step == total_steps
 
 
 def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=None) -> Any:
@@ -213,10 +222,14 @@ class WanTI2VSDEdit:
         sampling_steps: int = 100,
         guide_scale: float = 5.0,
         max_sequence_length: int = 128,
+        snapshot_callback: SnapshotCallback | None = None,
+        snapshot_every: int = 10,
     ) -> SDEditResult:
         torch, pipe = self.torch, self.pipeline
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
             raise ValueError("source_video must have shape [F, H, W, 3]")
+        if snapshot_every < 1:
+            raise ValueError("snapshot_every must be positive")
         start_idx = noise_strength_to_start_idx(strength, sampling_steps)
         expected_denoise_steps = denoise_step_count(strength, sampling_steps)
         transformer_device = next(pipe.transformer.parameters()).device
@@ -271,6 +284,20 @@ class WanTI2VSDEdit:
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
         latents = pipe.scheduler.add_noise(clean, noise, timesteps[:1])
+        snapshot_count = 0
+        if snapshot_callback is not None:
+            noisy_video = _decode_video(pipe, latents, torch)
+            snapshot_callback(
+                "noisy",
+                noisy_video,
+                {
+                    "kind": "scheduler_add_noise",
+                    "step": 0,
+                    "timestep": float(timesteps[0].item()),
+                },
+            )
+            snapshot_count += 1
+            print("[stage 2/5] Saved direct scheduler.add_noise decode.", flush=True)
 
         from PIL import Image
 
@@ -299,6 +326,7 @@ class WanTI2VSDEdit:
             flush=True,
         )
 
+        last_step_video = None
         for index, timestep in enumerate(timesteps):
             model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents
             timestep_batch = _expanded_timestep(pipe.transformer, first_frame_mask, timestep, latents.shape[0])
@@ -318,12 +346,40 @@ class WanTI2VSDEdit:
                     )[0]
                     prediction = uncond + guide_scale * (prediction - uncond)
             latents = pipe.scheduler.step(prediction, timestep, latents, return_dict=False)[0]
+            step_number = index + 1
+            should_save_snapshot = (
+                snapshot_callback is not None
+                and should_save_denoise_snapshot(
+                    step_number, len(timesteps), snapshot_every
+                )
+            )
+            if should_save_snapshot:
+                step_video = _decode_video(
+                    pipe,
+                    (1 - first_frame_mask) * condition + first_frame_mask * latents,
+                    torch,
+                )
+                last_step_video = step_video
+                snapshot_callback(
+                    f"denoise_step_{step_number:03d}",
+                    step_video,
+                    {
+                        "kind": "denoise_step",
+                        "step": step_number,
+                        "timestep": float(timestep.item()),
+                    },
+                )
+                snapshot_count += 1
             if index == 0 or (index + 1) % 5 == 0 or index + 1 == len(timesteps):
                 print(f"[stage 4/5] Denoise {index + 1}/{len(timesteps)}", flush=True)
 
         print("[stage 5/5] Decoding edited video...", flush=True)
         generated_latent = (1 - first_frame_mask) * condition + first_frame_mask * latents
-        generated_raw = _decode_video(pipe, generated_latent, torch)
+        generated_raw = (
+            last_step_video
+            if last_step_video is not None
+            else _decode_video(pipe, generated_latent, torch)
+        )
         generated_stats = validate_decoded_video(
             generated_raw, "generated_raw", expected_shape=source_video.shape
         )
@@ -337,6 +393,8 @@ class WanTI2VSDEdit:
                 "total_scheduler_steps": sampling_steps,
                 "denoise_start_index": start_idx,
                 "actual_denoise_steps": len(timesteps),
+                "denoise_snapshot_every": snapshot_every,
+                "saved_latent_decode_snapshots": snapshot_count,
                 "vae_roundtrip": vae_stats,
                 "generated_raw": generated_stats,
             },

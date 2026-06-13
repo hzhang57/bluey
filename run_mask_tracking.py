@@ -35,6 +35,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-sequence-length", type=int, default=128)
     parser.add_argument("--mask-score-threshold", type=float, default=0.20)
     parser.add_argument("--morphology-kernel", type=int, default=3)
+    parser.add_argument(
+        "--no-save-denoise-steps",
+        action="store_false",
+        dest="save_denoise_steps",
+        help="Disable saving noisy.mp4 and periodic denoise-step videos.",
+    )
+    parser.add_argument(
+        "--denoise-save-every",
+        type=int,
+        default=10,
+        help="Save one denoise-step video every N steps and always save the final step.",
+    )
+    parser.set_defaults(save_denoise_steps=True)
     return parser
 
 
@@ -74,6 +87,20 @@ def main() -> None:
     )
     prompt = build_silhouette_prompt(args.object_text)
     pipeline = WanTI2VSDEdit()
+    fps = args.fps or source_fps
+    snapshot_records = []
+
+    def save_snapshot(name, frames, metadata):
+        if name == "noisy":
+            relative_path = Path("noisy.mp4")
+        else:
+            timestep = metadata["timestep"]
+            relative_path = Path("denoise_steps") / (
+                f"step_{metadata['step']:03d}_timestep_{timestep:.4f}.mp4"
+            )
+        write_video(output_dir / relative_path, frames, fps)
+        snapshot_records.append({**metadata, "path": str(relative_path)})
+
     generation = pipeline.generate(
         source,
         prompt,
@@ -82,6 +109,8 @@ def main() -> None:
         sampling_steps=args.sampling_steps,
         guide_scale=args.guide_scale,
         max_sequence_length=args.max_sequence_length,
+        snapshot_callback=save_snapshot if args.save_denoise_steps else None,
+        snapshot_every=args.denoise_save_every,
     )
     generated_raw = generation.generated_raw
     masks, mask_score = extract_silhouette_mask(
@@ -92,7 +121,6 @@ def main() -> None:
     )
     edited = composite_white_target(source, masks)
     comparison = make_comparison(source, generated_raw, masks, edited)
-    fps = args.fps or source_fps
     write_video(output_dir / "source.mp4", source, fps)
     write_video(output_dir / "generated_raw.mp4", generated_raw, fps)
     write_video(output_dir / "edited.mp4", edited, fps)
@@ -120,6 +148,7 @@ def main() -> None:
         "metrics": temporal_metrics(masks, skip_first_frame=True),
         "diagnostics": {
             **generation.diagnostics,
+            "latent_decode_snapshots": snapshot_records,
             "source": video_statistics(source),
             "edited_composite": video_statistics(edited),
             "mask_score": {

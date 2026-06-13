@@ -18,6 +18,7 @@ from mask_tracking.wan_sdedit import (
     denoise_step_count,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
+    should_save_denoise_snapshot,
 )
 from run_mask_tracking import build_parser
 
@@ -162,6 +163,14 @@ class DiffusersWrapperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "steps must be positive"):
             noise_strength_to_start_idx(0.45, 0)
 
+    def test_saves_every_tenth_and_final_denoise_step(self):
+        saved = [
+            step
+            for step in range(1, 46)
+            if should_save_denoise_snapshot(step, total_steps=45, every=10)
+        ]
+        self.assertEqual(saved, [10, 20, 30, 40, 45])
+
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(
             _feat_map=["stale"],
@@ -200,6 +209,20 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(args.sampling_steps, 100)
         self.assertEqual(args.max_sequence_length, 128)
         self.assertEqual(args.mask_score_threshold, 0.20)
+        self.assertTrue(args.save_denoise_steps)
+        self.assertEqual(args.denoise_save_every, 10)
+
+    def test_cli_can_disable_denoise_step_videos(self):
+        args = build_parser().parse_args(
+            [
+                "--video",
+                "input.mp4",
+                "--object",
+                "car",
+                "--no-save-denoise-steps",
+            ]
+        )
+        self.assertFalse(args.save_denoise_steps)
 
     def test_cli_has_no_repository_or_checkpoint_flags(self):
         option_strings = {

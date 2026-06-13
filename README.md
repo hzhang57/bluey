@@ -101,9 +101,18 @@ Each run saves:
 - `mask_score.mp4`: continuous relative-whitening score heatmap.
 - `edited.mp4`: source video composited with pure white only inside the mask.
 - `vae_roundtrip.mp4`: source video after Wan VAE encode/decode only.
+- `noisy.mp4`: direct VAE decode of the latent returned by
+  `scheduler.add_noise`, before applying the TI2V first-frame condition.
+- `denoise_steps/step_NNN_timestep_*.mp4`: decoded video every 10 denoise steps
+  and at the final step.
 - `side_by_side.mp4`: source, raw generation, mask, and final composite.
 - `manifest.json`: parameters, pixel statistics, mask coverage, and no-GT
   temporal stability diagnostics.
+
+Denoise-step snapshots are enabled by default. They are saved every 10 steps
+and at the final step; for a 45-step run this saves steps 10, 20, 30, 40, and
+45. Change the interval with `--denoise-save-every` or disable snapshots with
+`--no-save-denoise-steps`.
 
 The mask score combines generated brightness, low chroma, brightness gain
 relative to the source, and total pixel change. Tune it with
