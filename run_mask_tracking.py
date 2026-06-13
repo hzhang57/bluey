@@ -55,8 +55,34 @@ def parse_args() -> argparse.Namespace:
     return build_parser().parse_args()
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if not 0.0 < args.strength <= 1.0:
+        raise ValueError("--strength must be in (0, 1]")
+    if args.sampling_steps < 1:
+        raise ValueError("--sampling-steps must be positive")
+    if args.guide_scale <= 0.0:
+        raise ValueError("--guide-scale must be positive")
+    if args.max_sequence_length < 1:
+        raise ValueError("--max-sequence-length must be positive")
+    if args.frame_num < 1 or (args.frame_num - 1) % 4:
+        raise ValueError("--frame-num must have the form 4n+1")
+    if args.start_frame < 0:
+        raise ValueError("--start-frame must be non-negative")
+    if args.fps <= 0.0:
+        raise ValueError("--fps must be positive")
+    if args.denoise_save_every < 1:
+        raise ValueError("--denoise-save-every must be positive")
+    if not 0.0 <= args.mask_score_threshold <= 1.0:
+        raise ValueError("--mask-score-threshold must be in [0, 1]")
+    if args.morphology_kernel < 1:
+        raise ValueError("--morphology-kernel must be positive")
+
+
 def main() -> None:
     args = parse_args()
+    validate_args(args)
+
+    import numpy as np
 
     from mask_tracking.analysis import (
         composite_white_target,
@@ -72,7 +98,7 @@ def main() -> None:
         score_to_rgb,
         write_video,
     )
-    from mask_tracking.wan_sdedit import MODEL_ID, WanTI2VSDEdit, diffusers_version
+    from mask_tracking.wan_sdedit import MODEL_ID, WanFullVideoSDEdit, diffusers_version
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +112,7 @@ def main() -> None:
         target_fps=args.fps,
     )
     prompt = build_silhouette_prompt(args.object_text)
-    pipeline = WanTI2VSDEdit()
+    pipeline = WanFullVideoSDEdit()
     fps = args.fps or source_fps
     snapshot_records = []
 
@@ -124,6 +150,12 @@ def main() -> None:
     write_video(output_dir / "source.mp4", source, fps)
     write_video(output_dir / "generated_raw.mp4", generated_raw, fps)
     write_video(output_dir / "edited.mp4", edited, fps)
+    np.savez_compressed(
+        output_dir / "composite_arrays.npz",
+        source=source,
+        mask=masks,
+        edited=edited,
+    )
     write_video(output_dir / "raw_mask.mp4", mask_to_rgb(masks), fps)
     write_video(output_dir / "mask_score.mp4", score_to_rgb(mask_score), fps)
     write_video(output_dir / "vae_roundtrip.mp4", generation.vae_roundtrip, fps)
@@ -135,9 +167,9 @@ def main() -> None:
             "No-GT discovery probe. generated_raw.mp4 is model evidence; "
             "edited.mp4 is composited from the source and extracted mask."
         ),
-        "first_frame_policy": (
-            "Official TI2V fixes the first-frame condition. Frame 0 mask is empty "
-            "and excluded from temporal metrics."
+        "conditioning_policy": (
+            "Full source-video latent SDEdit with text conditioning only. No first-frame "
+            "image condition is injected; every frame is noised, denoised, and evaluated."
         ),
         "object": args.object_text,
         "prompt": prompt,
@@ -145,7 +177,7 @@ def main() -> None:
         "model_id": MODEL_ID,
         "parameters": vars(args),
         "preprocessing": preprocessing,
-        "metrics": temporal_metrics(masks, skip_first_frame=True),
+        "metrics": temporal_metrics(masks, skip_first_frame=False),
         "diagnostics": {
             **generation.diagnostics,
             "latent_decode_snapshots": snapshot_records,

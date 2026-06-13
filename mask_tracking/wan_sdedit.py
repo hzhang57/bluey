@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import importlib.metadata
 import importlib.util
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -149,18 +150,33 @@ def verify_scheduler_add_noise(
     return result
 
 
+def validate_text_only_latent_contract(transformer: Any, latent: Any) -> dict[str, Any]:
+    latent_channels = int(latent.shape[1])
+    transformer_channels = int(transformer.config.in_channels)
+    if latent_channels != transformer_channels:
+        raise ValueError(
+            "Text-only full-video SDEdit requires source latent channels to match "
+            f"transformer input channels: latent={latent_channels}, "
+            f"transformer={transformer_channels}"
+        )
+    return {
+        "latent_channels": latent_channels,
+        "transformer_in_channels": transformer_channels,
+        "uses_first_frame_condition": False,
+    }
+
+
 def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=None) -> Any:
     if vae_class is None or pipeline_class is None:
         try:
-            from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
+            from diffusers import AutoencoderKLWan, WanPipeline
         except ImportError as error:
             raise ImportError("Install the project requirements before loading Wan2.2") from error
-        vae_class, pipeline_class = AutoencoderKLWan, WanImageToVideoPipeline
+        vae_class, pipeline_class = AutoencoderKLWan, WanPipeline
 
     vae = vae_class.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch_module.float16)
     pipe = pipeline_class.from_pretrained(MODEL_ID, vae=vae, torch_dtype=torch_module.bfloat16)
     pipe.register_to_config(expand_timesteps=True)
-
     transformer_device = torch_module.device("cuda:0")
     vae_device = torch_module.device("cuda:1" if torch_module.cuda.device_count() > 1 else "cuda:0")
     text_device = torch_module.device("cpu")
@@ -168,7 +184,6 @@ def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=No
     pipe.vae.to("cpu", dtype=torch_module.float16)
     pipe.text_encoder.to(text_device)
     pipe._vae_target_device = vae_device
-    pipe._text_target_device = text_device
     if hasattr(pipe.vae, "enable_slicing"):
         pipe.vae.enable_slicing()
     print(
@@ -195,15 +210,28 @@ def _vae_norm(pipe: Any, device: Any, torch_module: Any) -> tuple[Any, Any]:
     return mean.view(shape), (1.0 / std).view(shape)
 
 
-def _expanded_timestep(model: Any, mask: Any, timestep: Any, batch_size: int) -> Any:
-    patch_size = model.config.patch_size
-    token_mask = mask[0][0][:, :: int(patch_size[1]), :: int(patch_size[2])]
-    return (token_mask * timestep).flatten().unsqueeze(0).expand(batch_size, -1)
-
-
 def _clear_memory(torch_module: Any) -> None:
     gc.collect()
     torch_module.cuda.empty_cache()
+
+
+def _model_cache_context(model: Any, name: str) -> Any:
+    return model.cache_context(name) if hasattr(model, "cache_context") else nullcontext()
+
+
+def _text_only_timestep(pipe: Any, latents: Any, timestep: Any, torch_module: Any) -> Any:
+    if not bool(_config_value(pipe.config, "expand_timesteps", False)):
+        return timestep.expand(latents.shape[0])
+    patch_size = pipe.transformer.config.patch_size
+    mask = torch_module.ones(
+        (1, 1, *latents.shape[2:]),
+        device=latents.device,
+        dtype=torch_module.float32,
+    )
+    token_mask = mask[0][0][
+        :, :: int(patch_size[1]), :: int(patch_size[2])
+    ]
+    return (token_mask * timestep).flatten().unsqueeze(0).expand(latents.shape[0], -1)
 
 
 def _clear_vae_cache(pipe: Any) -> None:
@@ -295,8 +323,8 @@ def _encode_prompt(
     return prompt_embeds, negative_embeds
 
 
-class WanTI2VSDEdit:
-    """Source-video SDEdit using the official Wan2.2 TI2V expanded-timestep path."""
+class WanFullVideoSDEdit:
+    """Full-video latent SDEdit with text conditioning and no first-frame condition."""
 
     def __init__(self, pipeline: Any | None = None):
         import torch
@@ -360,6 +388,7 @@ class WanTI2VSDEdit:
             flush=True,
         )
         clean = _encode_video(pipe, source_video, transformer_device, transformer_dtype, torch)
+        latent_contract = validate_text_only_latent_contract(pipe.transformer, clean)
         print(f"[stage 2/5] Source latent shape={tuple(clean.shape)}", flush=True)
         print("[stage 2/5] Decoding VAE round-trip diagnostic...", flush=True)
         vae_roundtrip = _decode_video(pipe, clean, torch)
@@ -390,7 +419,6 @@ class WanTI2VSDEdit:
                 "Scheduler returned an unexpected denoise-step count: "
                 f"expected {expected_denoise_steps}, got {len(timesteps)}"
             )
-        generator = torch.Generator(device="cpu").manual_seed(seed)
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
         latents = add_noise_at_timestep(pipe.scheduler, clean, noise, timesteps[0])
@@ -419,51 +447,31 @@ class WanTI2VSDEdit:
             snapshot_count += 1
             print("[stage 2/5] Saved direct scheduler.add_noise decode.", flush=True)
 
-        from PIL import Image
-
-        print("[stage 3/5] Preparing official TI2V first-frame condition...", flush=True)
-        image = pipe.video_processor.preprocess(
-            Image.fromarray(source_video[0]), height=height, width=width
-        ).to(device=vae_device, dtype=torch.float32)
-        latents, condition, first_frame_mask = pipe.prepare_latents(
-            image,
-            batch_size=1,
-            num_channels_latents=pipe.vae.config.z_dim,
-            height=height,
-            width=width,
-            num_frames=frames,
-            dtype=torch.float32,
-            device=vae_device,
-            generator=generator,
-            latents=latents.to(device=vae_device, dtype=torch.float32),
-        )
-        latents = latents.to(transformer_device, transformer_dtype)
-        condition = condition.to(transformer_device, transformer_dtype)
-        first_frame_mask = first_frame_mask.to(transformer_device, transformer_dtype)
         print(
-            f"[stage 3/5] Condition ready; running {len(timesteps)} denoise steps "
+            f"[stage 3/5] Full-video latent ready; running {len(timesteps)} denoise steps "
             f"(strength={strength}, total scheduler steps={sampling_steps}).",
             flush=True,
         )
 
         last_step_video = None
         for index, timestep in enumerate(timesteps):
-            model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents
-            timestep_batch = _expanded_timestep(pipe.transformer, first_frame_mask, timestep, latents.shape[0])
-            with torch.no_grad():
+            timestep_batch = _text_only_timestep(pipe, latents, timestep, torch)
+            with torch.no_grad(), _model_cache_context(pipe.transformer, "cond"):
                 prediction = pipe.transformer(
-                    hidden_states=model_input,
+                    hidden_states=latents.to(transformer_dtype),
                     timestep=timestep_batch,
                     encoder_hidden_states=prompt_embeds,
                     return_dict=False,
                 )[0]
+            with torch.no_grad():
                 if negative_embeds is not None:
-                    uncond = pipe.transformer(
-                        hidden_states=model_input,
-                        timestep=timestep_batch,
-                        encoder_hidden_states=negative_embeds,
-                        return_dict=False,
-                    )[0]
+                    with _model_cache_context(pipe.transformer, "uncond"):
+                        uncond = pipe.transformer(
+                            hidden_states=latents.to(transformer_dtype),
+                            timestep=timestep_batch,
+                            encoder_hidden_states=negative_embeds,
+                            return_dict=False,
+                        )[0]
                     prediction = uncond + guide_scale * (prediction - uncond)
             latents = pipe.scheduler.step(prediction, timestep, latents, return_dict=False)[0]
             step_number = index + 1
@@ -476,7 +484,7 @@ class WanTI2VSDEdit:
             if should_save_snapshot:
                 step_video = _decode_video(
                     pipe,
-                    (1 - first_frame_mask) * condition + first_frame_mask * latents,
+                    latents,
                     torch,
                 )
                 last_step_video = step_video
@@ -494,7 +502,7 @@ class WanTI2VSDEdit:
                 print(f"[stage 4/5] Denoise {index + 1}/{len(timesteps)}", flush=True)
 
         print("[stage 5/5] Decoding edited video...", flush=True)
-        generated_latent = (1 - first_frame_mask) * condition + first_frame_mask * latents
+        generated_latent = latents
         generated_raw = (
             last_step_video
             if last_step_video is not None
@@ -510,6 +518,9 @@ class WanTI2VSDEdit:
             diagnostics={
                 "clean_latent_shape": list(clean.shape),
                 "generated_latent_shape": list(generated_latent.shape),
+                "conditioning_mode": "full_video_latent_text_only",
+                "first_frame_condition": False,
+                "text_only_latent_contract": latent_contract,
                 "total_scheduler_steps": sampling_steps,
                 "denoise_start_index": start_idx,
                 "actual_denoise_steps": len(timesteps),
@@ -526,6 +537,9 @@ class WanTI2VSDEdit:
                 "generated_raw": generated_stats,
             },
         )
+
+
+WanTI2VSDEdit = WanFullVideoSDEdit
 
 
 def diffusers_version() -> str:

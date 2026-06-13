@@ -14,6 +14,7 @@ from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
     _clear_vae_cache,
+    _text_only_timestep,
     add_noise_at_timestep,
     check_pipeline_dependencies,
     denoise_step_count,
@@ -21,9 +22,10 @@ from mask_tracking.wan_sdedit import (
     noise_strength_to_start_idx,
     scheduler_noise_diagnostics,
     should_save_denoise_snapshot,
+    validate_text_only_latent_contract,
     validate_official_scheduler,
 )
-from run_mask_tracking import build_parser
+from run_mask_tracking import build_parser, validate_args
 
 
 class PromptTests(unittest.TestCase):
@@ -38,14 +40,14 @@ class PromptTests(unittest.TestCase):
 
 
 class AnalysisTests(unittest.TestCase):
-    def test_extracts_gray_white_target_after_first_frame(self):
+    def test_extracts_gray_white_target_including_first_frame(self):
         source = np.zeros((3, 8, 8, 3), dtype=np.uint8)
         source[:, 2:6, 2:6] = [180, 20, 20]
         generated = source.copy()
         generated[:, 2:6, 2:6] = [210, 210, 210]
         masks, score = extract_silhouette_mask(source, generated, morphology_kernel=1)
-        self.assertFalse(masks[0].any())
-        self.assertEqual(int((masks[1:] > 0).sum()), 2 * 4 * 4)
+        self.assertTrue(masks[0].any())
+        self.assertEqual(int((masks > 0).sum()), 3 * 4 * 4)
         self.assertGreater(float(score[1, 3, 3]), 0.20)
 
     def test_unchanged_white_is_not_a_mask(self):
@@ -54,23 +56,21 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(masks.any())
         self.assertFalse(score.any())
 
-    def test_composite_preserves_background_and_first_frame(self):
+    def test_composite_whitens_mask_including_first_frame(self):
         source = np.arange(3 * 4 * 4 * 3, dtype=np.uint8).reshape(3, 4, 4, 3)
         masks = np.zeros((3, 4, 4), dtype=np.uint8)
         masks[:, 1:3, 1:3] = 255
         edited = composite_white_target(source, masks)
-        self.assertTrue(np.array_equal(edited[0], source[0]))
         selected = masks > 0
-        selected[0] = False
         self.assertTrue(np.all(edited[selected] == 255))
         self.assertTrue(np.array_equal(edited[~selected], source[~selected]))
 
     def test_stable_mask_metrics(self):
         masks = np.zeros((3, 4, 4), dtype=np.uint8)
-        masks[1:, 1:3, 1:3] = 255
+        masks[:, 1:3, 1:3] = 255
         metrics = temporal_metrics(masks)
-        self.assertTrue(metrics["skipped_first_frame"])
-        self.assertEqual(len(metrics["foreground_fraction_per_frame"]), 2)
+        self.assertFalse(metrics["skipped_first_frame"])
+        self.assertEqual(len(metrics["foreground_fraction_per_frame"]), 3)
         self.assertEqual(metrics["mean_consecutive_iou"], 1.0)
         self.assertEqual(metrics["mean_flicker_rate"], 0.0)
 
@@ -90,16 +90,6 @@ class AnalysisTests(unittest.TestCase):
             validate_decoded_video(
                 video, "generated_raw", expected_shape=(3, 4, 4, 3)
             )
-
-
-class FakeGenerator:
-    def __init__(self, device):
-        self.device = device
-        self.seed = None
-
-    def manual_seed(self, seed):
-        self.seed = seed
-        return self
 
 
 class FakeTorch:
@@ -240,6 +230,29 @@ class DiffusersWrapperTests(unittest.TestCase):
         scheduler.add_noise.assert_called_once_with(latents, noise, moved)
         self.assertEqual(result, "noisy")
 
+    def test_text_only_latent_contract_rejects_condition_channels(self):
+        transformer = SimpleNamespace(config=SimpleNamespace(in_channels=48))
+        latent = np.zeros((1, 48, 7, 30, 52), dtype=np.float32)
+        contract = validate_text_only_latent_contract(transformer, latent)
+        self.assertFalse(contract["uses_first_frame_condition"])
+        with self.assertRaisesRegex(ValueError, "latent=96, transformer=48"):
+            validate_text_only_latent_contract(
+                transformer, np.zeros((1, 96, 7, 30, 52), dtype=np.float32)
+            )
+
+    def test_text_only_expanded_timestep_assigns_every_token_current_time(self):
+        import torch
+
+        pipe = SimpleNamespace(
+            config=SimpleNamespace(expand_timesteps=True),
+            transformer=SimpleNamespace(config=SimpleNamespace(patch_size=(1, 2, 2))),
+        )
+        latents = torch.zeros((1, 48, 7, 4, 6))
+        timestep = torch.tensor(638.0)
+        expanded = _text_only_timestep(pipe, latents, timestep, torch)
+        self.assertEqual(tuple(expanded.shape), (1, 7 * 2 * 3))
+        self.assertTrue(torch.all(expanded == timestep))
+
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(
             _feat_map=["stale"],
@@ -249,7 +262,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         vae.clear_cache.assert_called_once_with()
         self.assertEqual(vae._feat_map, [None])
 
-    def test_loads_official_ti2v_pipeline_configuration(self):
+    def test_loads_checkpoint_with_text_only_expanded_timesteps(self):
         vae = object()
         pipeline = FakePipeline()
         load_vae = MagicMock(return_value=vae)
@@ -292,6 +305,13 @@ class DiffusersWrapperTests(unittest.TestCase):
             ]
         )
         self.assertFalse(args.save_denoise_steps)
+
+    def test_cli_validation_runs_before_model_loading(self):
+        args = build_parser().parse_args(
+            ["--video", "input.mp4", "--object", "car", "--strength", "0"]
+        )
+        with self.assertRaisesRegex(ValueError, "--strength"):
+            validate_args(args)
 
     def test_cli_has_no_repository_or_checkpoint_flags(self):
         option_strings = {

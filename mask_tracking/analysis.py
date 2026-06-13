@@ -15,7 +15,6 @@ def relative_whitening_score(source: np.ndarray, generated: np.ndarray) -> np.nd
     low_chroma = 1.0 - (generated_f.max(axis=-1) - generated_f.min(axis=-1))
     difference = np.linalg.norm(generated_f - source_f, axis=-1) / np.sqrt(3.0)
     score = generated_luma * low_chroma * np.sqrt(brightness_gain * difference)
-    score[0] = 0.0
     return np.clip(score, 0.0, 1.0).astype(np.float32)
 
 
@@ -41,7 +40,6 @@ def extract_silhouette_mask(
                 for mask in masks
             ]
         )
-    masks[0] = 0
     return masks, score
 
 
@@ -50,7 +48,6 @@ def composite_white_target(source: np.ndarray, masks: np.ndarray) -> np.ndarray:
         raise ValueError("source must be [F,H,W,3] and masks must be [F,H,W]")
     result = source.copy()
     result[masks > 0] = 255
-    result[0] = source[0]
     return result
 
 
@@ -86,7 +83,7 @@ def validate_decoded_video(
     return stats
 
 
-def temporal_metrics(masks: np.ndarray, skip_first_frame: bool = True) -> dict[str, float | list[float]]:
+def temporal_metrics(masks: np.ndarray, skip_first_frame: bool = False) -> dict[str, float | list[float]]:
     """Compute no-GT diagnostics. These measure stability, not segmentation accuracy."""
     if masks.ndim != 3:
         raise ValueError("masks must have shape [F, H, W]")

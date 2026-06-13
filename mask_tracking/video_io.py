@@ -102,13 +102,6 @@ def score_to_rgb(score: np.ndarray) -> np.ndarray:
     return np.stack(frames)
 
 
-def make_overlay(source: np.ndarray, masks: np.ndarray) -> np.ndarray:
-    result = source.astype(np.float32).copy()
-    selected = masks > 0
-    result[selected] = result[selected] * 0.35 + np.array([255, 255, 0]) * 0.65
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
 def make_comparison(
     source: np.ndarray, generated: np.ndarray, masks: np.ndarray, edited: np.ndarray
 ) -> np.ndarray:
