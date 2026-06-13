@@ -131,7 +131,9 @@ class DiffusersWrapperTests(unittest.TestCase):
         )
         self.assertTrue(pipeline.registered_config["expand_timesteps"])
         pipeline.transformer.to.assert_called_once_with("cuda:0")
-        pipeline.text_encoder.to.assert_called_once_with("cpu")
+        pipeline.text_encoder.to.assert_called_once_with("cuda:1")
+        self.assertEqual(pipeline.vae.moves[0], (("cpu",), {"dtype": FakeTorch.float16}))
+        self.assertEqual(pipeline._vae_target_device, "cuda:1")
         self.assertTrue(pipeline.vae.slicing_enabled)
 
     def test_kaggle_friendly_cli_defaults(self):

@@ -56,7 +56,9 @@ The default `49` frames, `832*480`, and `30` sampling steps are selected for
 Kaggle GPUs. The implementation follows the official TI2V expanded-timestep
 path: encode the full source video, add scheduler noise, inject the first-frame
 condition through `prepare_latents`, then denoise. On dual T4, the transformer
-uses `cuda:0` and the VAE uses `cuda:1`.
+uses `cuda:0`; `cuda:1` first encodes the T5 prompt, releases T5, and then runs
+the VAE. Long stages print explicit progress messages, so silence after
+pipeline loading should no longer look like a stalled process.
 
 If the GPU still runs out of memory, restart the Kaggle session and run:
 
