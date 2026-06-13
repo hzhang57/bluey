@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import importlib.metadata
 import importlib.util
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,7 +34,14 @@ def check_pipeline_dependencies() -> None:
 def noise_strength_to_start_idx(strength: float, steps: int) -> int:
     if not 0.0 < strength <= 1.0:
         raise ValueError("strength must be in (0, 1]")
-    return min(round((1.0 - strength) * steps), steps - 1)
+    if steps < 1:
+        raise ValueError("steps must be positive")
+    denoise_steps = max(1, math.ceil(strength * steps))
+    return steps - denoise_steps
+
+
+def denoise_step_count(strength: float, steps: int) -> int:
+    return steps - noise_strength_to_start_idx(strength, steps)
 
 
 def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=None) -> Any:
@@ -202,7 +210,7 @@ class WanTI2VSDEdit:
         prompt: str,
         strength: float,
         seed: int,
-        sampling_steps: int = 30,
+        sampling_steps: int = 100,
         guide_scale: float = 5.0,
         max_sequence_length: int = 128,
     ) -> SDEditResult:
@@ -210,6 +218,7 @@ class WanTI2VSDEdit:
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
             raise ValueError("source_video must have shape [F, H, W, 3]")
         start_idx = noise_strength_to_start_idx(strength, sampling_steps)
+        expected_denoise_steps = denoise_step_count(strength, sampling_steps)
         transformer_device = next(pipe.transformer.parameters()).device
         transformer_dtype = pipe.transformer.dtype
         frames, height, width = source_video.shape[:3]
@@ -253,6 +262,11 @@ class WanTI2VSDEdit:
         if hasattr(pipe.scheduler, "set_begin_index"):
             pipe.scheduler.set_begin_index(start_idx)
         timesteps = timesteps[start_idx:]
+        if len(timesteps) != expected_denoise_steps:
+            raise RuntimeError(
+                "Scheduler returned an unexpected denoise-step count: "
+                f"expected {expected_denoise_steps}, got {len(timesteps)}"
+            )
         generator = torch.Generator(device="cpu").manual_seed(seed)
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
@@ -280,7 +294,8 @@ class WanTI2VSDEdit:
         condition = condition.to(transformer_device, transformer_dtype)
         first_frame_mask = first_frame_mask.to(transformer_device, transformer_dtype)
         print(
-            f"[stage 3/5] Condition ready; running {len(timesteps)} denoise steps.",
+            f"[stage 3/5] Condition ready; running {len(timesteps)} denoise steps "
+            f"(strength={strength}, total scheduler steps={sampling_steps}).",
             flush=True,
         )
 
@@ -319,6 +334,9 @@ class WanTI2VSDEdit:
             diagnostics={
                 "clean_latent_shape": list(clean.shape),
                 "generated_latent_shape": list(generated_latent.shape),
+                "total_scheduler_steps": sampling_steps,
+                "denoise_start_index": start_idx,
+                "actual_denoise_steps": len(timesteps),
                 "vae_roundtrip": vae_stats,
                 "generated_raw": generated_stats,
             },

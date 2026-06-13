@@ -25,7 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="832*480",
     )
     parser.add_argument("--fps", type=float, default=24.0)
-    parser.add_argument("--sampling-steps", type=int, default=30)
+    parser.add_argument(
+        "--sampling-steps",
+        type=int,
+        default=100,
+        help="Total scheduler steps before strength truncation; actual denoise steps are approximately strength * this value.",
+    )
     parser.add_argument("--guide-scale", type=float, default=5.0)
     parser.add_argument("--max-sequence-length", type=int, default=128)
     parser.add_argument("--mask-score-threshold", type=float, default=0.20)

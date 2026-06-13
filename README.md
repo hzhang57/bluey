@@ -52,13 +52,15 @@ python run_mask_tracking.py \
   --output-dir outputs/red_car
 ```
 
-The default `49` frames, `832*480`, and `30` sampling steps are selected for
-Kaggle GPUs. The implementation follows the official TI2V expanded-timestep
-path: encode the full source video, add scheduler noise, inject the first-frame
-condition through `prepare_latents`, then denoise. On dual T4, the transformer
-uses `cuda:0`, T5 stays on CPU because UMT5 does not fit in a 15 GiB T4, and
-the VAE uses `cuda:1`. Prompt length defaults to 128 tokens to reduce CPU T5
-time. Long stages print explicit progress messages.
+The default `49` frames, `832*480`, and `100` total scheduler steps are selected
+so `--strength 0.45` executes `45` actual denoise steps. In general, actual
+denoise steps are approximately `strength * sampling_steps`; both counts are
+printed and recorded in the manifest. The implementation follows the official
+TI2V expanded-timestep path: encode the full source video, add scheduler noise,
+inject the first-frame condition through `prepare_latents`, then denoise. On
+dual T4, the transformer uses `cuda:0`, T5 stays on CPU because UMT5 does not
+fit in a 15 GiB T4, and the VAE uses `cuda:1`. Prompt length defaults to 128
+tokens to reduce CPU T5 time. Long stages print explicit progress messages.
 
 If the GPU still runs out of memory, restart the Kaggle session and run:
 
@@ -68,7 +70,7 @@ python run_mask_tracking.py \
   --object "the red car" \
   --frame-num 25 \
   --size 832*480 \
-  --sampling-steps 20
+  --sampling-steps 100
 ```
 
 `--object` accepts an arbitrary referring expression. A run processes one

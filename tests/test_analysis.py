@@ -15,6 +15,7 @@ from mask_tracking.wan_sdedit import (
     MODEL_ID,
     _clear_vae_cache,
     check_pipeline_dependencies,
+    denoise_step_count,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
 )
@@ -153,6 +154,13 @@ class DiffusersWrapperTests(unittest.TestCase):
     def test_strength_maps_to_scheduler_start(self):
         self.assertEqual(noise_strength_to_start_idx(0.5, 30), 15)
         self.assertEqual(noise_strength_to_start_idx(1.0, 30), 0)
+        self.assertEqual(noise_strength_to_start_idx(0.45, 100), 55)
+        self.assertEqual(denoise_step_count(0.45, 100), 45)
+        self.assertEqual(denoise_step_count(0.451, 100), 46)
+
+    def test_scheduler_steps_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "steps must be positive"):
+            noise_strength_to_start_idx(0.45, 0)
 
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(
@@ -189,7 +197,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         args = build_parser().parse_args(["--video", "input.mp4", "--object", "car"])
         self.assertEqual(args.frame_num, 49)
         self.assertEqual(args.size, "832*480")
-        self.assertEqual(args.sampling_steps, 30)
+        self.assertEqual(args.sampling_steps, 100)
         self.assertEqual(args.max_sequence_length, 128)
         self.assertEqual(args.mask_score_threshold, 0.20)
 
