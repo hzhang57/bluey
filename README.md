@@ -125,6 +125,13 @@ also records latent standard deviations and the numerical error between the
 official `scheduler.add_noise` result and its current signal/noise formula
 under `diagnostics.add_noise_verification`.
 
+The SDEdit noise path follows `codes_point_prompting/debug_denoise_moe.py`:
+it validates the official checkpoint scheduler configuration, maps strength to
+the descending scheduler timestep with the same rounded index calculation, and
+calls `scheduler.add_noise` with the selected timestep explicitly moved to the
+clean latent device. The full and executed timestep head/tail values are stored
+in the manifest.
+
 The mask score combines generated brightness, low chroma, brightness gain
 relative to the source, and total pixel change. Tune it with
 `--mask-score-threshold` (default `0.20`). Frame 0 is fixed by the official TI2V

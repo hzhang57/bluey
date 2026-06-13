@@ -14,12 +14,14 @@ from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
     _clear_vae_cache,
+    add_noise_at_timestep,
     check_pipeline_dependencies,
     denoise_step_count,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
     scheduler_noise_diagnostics,
     should_save_denoise_snapshot,
+    validate_official_scheduler,
 )
 from run_mask_tracking import build_parser
 
@@ -158,7 +160,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(noise_strength_to_start_idx(1.0, 30), 0)
         self.assertEqual(noise_strength_to_start_idx(0.45, 100), 55)
         self.assertEqual(denoise_step_count(0.45, 100), 45)
-        self.assertEqual(denoise_step_count(0.451, 100), 46)
+        self.assertEqual(denoise_step_count(0.451, 100), 45)
 
     def test_scheduler_steps_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "steps must be positive"):
@@ -201,6 +203,42 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertAlmostEqual(diagnostics["noise_weight"], 0.804)
         self.assertTrue(diagnostics["use_flow_sigmas"])
         self.assertEqual(diagnostics["flow_shift"], 5.0)
+
+    def test_validates_reference_scheduler_configuration(self):
+        scheduler = type(
+            "UniPCMultistepScheduler",
+            (),
+            {
+                "config": SimpleNamespace(
+                    _class_name="UniPCMultistepScheduler",
+                    flow_shift=5.0,
+                    prediction_type="flow_prediction",
+                    use_flow_sigmas=True,
+                    timestep_spacing="linspace",
+                    solver_order=2,
+                    solver_type="bh2",
+                    num_train_timesteps=1000,
+                )
+            },
+        )()
+        info = validate_official_scheduler(scheduler)
+        self.assertEqual(info["scheduler_source"], "checkpoint_config")
+        scheduler.config.flow_shift = 1.0
+        with self.assertRaisesRegex(ValueError, "does not match official"):
+            validate_official_scheduler(scheduler)
+
+    def test_add_noise_moves_reference_timestep_to_latent_device(self):
+        timestep = MagicMock()
+        timestep.ndim = 0
+        expanded = timestep.unsqueeze.return_value
+        moved = expanded.to.return_value
+        latents = SimpleNamespace(device="cuda:0")
+        noise = object()
+        scheduler = SimpleNamespace(add_noise=MagicMock(return_value="noisy"))
+        result = add_noise_at_timestep(scheduler, latents, noise, timestep)
+        expanded.to.assert_called_once_with(device="cuda:0")
+        scheduler.add_noise.assert_called_once_with(latents, noise, moved)
+        self.assertEqual(result, "noisy")
 
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(

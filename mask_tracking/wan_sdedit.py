@@ -3,7 +3,6 @@ from __future__ import annotations
 import gc
 import importlib.metadata
 import importlib.util
-import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -13,6 +12,8 @@ from .analysis import validate_decoded_video
 
 MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 REQUIRED_PIPELINE_PACKAGES = ("ftfy",)
+OFFICIAL_SCHEDULER_CLASS = "UniPCMultistepScheduler"
+OFFICIAL_FLOW_SHIFT = 5.0
 
 
 @dataclass
@@ -39,8 +40,7 @@ def noise_strength_to_start_idx(strength: float, steps: int) -> int:
         raise ValueError("strength must be in (0, 1]")
     if steps < 1:
         raise ValueError("steps must be positive")
-    denoise_steps = max(1, math.ceil(strength * steps))
-    return steps - denoise_steps
+    return min(round((1.0 - strength) * steps), steps - 1)
 
 
 def denoise_step_count(strength: float, steps: int) -> int:
@@ -51,6 +51,60 @@ def should_save_denoise_snapshot(step: int, total_steps: int, every: int) -> boo
     if every < 1:
         raise ValueError("snapshot interval must be positive")
     return step % every == 0 or step == total_steps
+
+
+def _config_value(config: Any, name: str, default: Any = None) -> Any:
+    if isinstance(config, dict):
+        return config.get(name, default)
+    return getattr(config, name, default)
+
+
+def scheduler_info(scheduler: Any) -> dict[str, Any]:
+    config = scheduler.config
+    return {
+        "scheduler_class": scheduler.__class__.__name__,
+        "scheduler_config_class": _config_value(config, "_class_name"),
+        "scheduler_flow_shift": _config_value(config, "flow_shift"),
+        "scheduler_prediction_type": _config_value(config, "prediction_type"),
+        "scheduler_use_flow_sigmas": _config_value(config, "use_flow_sigmas"),
+        "scheduler_timestep_spacing": _config_value(config, "timestep_spacing"),
+        "scheduler_solver_order": _config_value(config, "solver_order"),
+        "scheduler_solver_type": _config_value(config, "solver_type"),
+        "scheduler_num_train_timesteps": _config_value(config, "num_train_timesteps"),
+    }
+
+
+def validate_official_scheduler(scheduler: Any) -> dict[str, Any]:
+    info = scheduler_info(scheduler)
+    expected = {
+        "scheduler_class": OFFICIAL_SCHEDULER_CLASS,
+        "scheduler_flow_shift": OFFICIAL_FLOW_SHIFT,
+        "scheduler_prediction_type": "flow_prediction",
+        "scheduler_use_flow_sigmas": True,
+        "scheduler_timestep_spacing": "linspace",
+    }
+    mismatches = {
+        name: (info.get(name), expected_value)
+        for name, expected_value in expected.items()
+        if info.get(name) != expected_value
+    }
+    if mismatches:
+        raise ValueError(
+            "Pipeline scheduler does not match official Wan2.2-TI2V-5B config: "
+            f"{mismatches}"
+        )
+    return {**info, "scheduler_source": "checkpoint_config"}
+
+
+def tensor_head_tail(tensor: Any, count: int = 5) -> tuple[list[float], list[float]]:
+    values = [float(value) for value in tensor.detach().float().cpu().tolist()]
+    return values[:count], values[-count:]
+
+
+def add_noise_at_timestep(scheduler: Any, latents: Any, noise: Any, timestep: Any) -> Any:
+    if timestep.ndim == 0:
+        timestep = timestep.unsqueeze(0)
+    return scheduler.add_noise(latents, noise, timestep.to(device=latents.device))
 
 
 def scheduler_noise_diagnostics(scheduler: Any, start_idx: int) -> dict[str, Any]:
@@ -274,6 +328,7 @@ class WanTI2VSDEdit:
             raise ValueError("snapshot_every must be positive")
         start_idx = noise_strength_to_start_idx(strength, sampling_steps)
         expected_denoise_steps = denoise_step_count(strength, sampling_steps)
+        scheduler_config = validate_official_scheduler(pipe.scheduler)
         transformer_device = next(pipe.transformer.parameters()).device
         transformer_dtype = pipe.transformer.dtype
         frames, height, width = source_video.shape[:3]
@@ -314,6 +369,7 @@ class WanTI2VSDEdit:
 
         pipe.scheduler.set_timesteps(sampling_steps, device=transformer_device)
         noise_diagnostics = scheduler_noise_diagnostics(pipe.scheduler, start_idx)
+        all_timesteps_head, all_timesteps_tail = tensor_head_tail(pipe.scheduler.timesteps)
         print(
             "[noise] "
             f"scheduler={noise_diagnostics['scheduler_class']} "
@@ -328,6 +384,7 @@ class WanTI2VSDEdit:
         if hasattr(pipe.scheduler, "set_begin_index"):
             pipe.scheduler.set_begin_index(start_idx)
         timesteps = timesteps[start_idx:]
+        run_timesteps_head, run_timesteps_tail = tensor_head_tail(timesteps)
         if len(timesteps) != expected_denoise_steps:
             raise RuntimeError(
                 "Scheduler returned an unexpected denoise-step count: "
@@ -336,7 +393,7 @@ class WanTI2VSDEdit:
         generator = torch.Generator(device="cpu").manual_seed(seed)
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
-        latents = pipe.scheduler.add_noise(clean, noise, timesteps[:1])
+        latents = add_noise_at_timestep(pipe.scheduler, clean, noise, timesteps[0])
         add_noise_verification = verify_scheduler_add_noise(
             clean, noise, latents, noise_diagnostics
         )
@@ -456,6 +513,11 @@ class WanTI2VSDEdit:
                 "total_scheduler_steps": sampling_steps,
                 "denoise_start_index": start_idx,
                 "actual_denoise_steps": len(timesteps),
+                "scheduler": scheduler_config,
+                "all_timesteps_head": all_timesteps_head,
+                "all_timesteps_tail": all_timesteps_tail,
+                "run_timesteps_head": run_timesteps_head,
+                "run_timesteps_tail": run_timesteps_tail,
                 "denoise_snapshot_every": snapshot_every,
                 "saved_latent_decode_snapshots": snapshot_count,
                 "initial_noise": noise_diagnostics,
