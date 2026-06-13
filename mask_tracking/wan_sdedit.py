@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 from typing import Any
 
 import numpy as np
 
 MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+REQUIRED_PIPELINE_PACKAGES = ("ftfy",)
+
+
+def check_pipeline_dependencies() -> None:
+    missing = [
+        package
+        for package in REQUIRED_PIPELINE_PACKAGES
+        if importlib.util.find_spec(package) is None
+    ]
+    if missing:
+        packages = " ".join(missing)
+        raise ImportError(
+            f"Missing Wan pipeline dependencies: {', '.join(missing)}. "
+            "Install them before loading the model with:\n"
+            f"  pip install {packages}"
+        )
 
 
 class WanTI2VSDEdit:
@@ -15,6 +32,7 @@ class WanTI2VSDEdit:
         import torch
 
         if pipeline is None:
+            check_pipeline_dependencies()
             if not torch.cuda.is_available():
                 raise RuntimeError(
                     "Wan2.2 video-to-video inference requires CUDA, but this Python "

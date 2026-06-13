@@ -3,4 +3,5 @@
 diffusers==0.38.0
 safetensors>=0.8.0
 sentencepiece
+ftfy
 imageio[ffmpeg]>=2.34.0

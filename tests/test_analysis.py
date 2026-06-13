@@ -1,11 +1,12 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
 from mask_tracking.prompting import build_silhouette_prompt
-from mask_tracking.wan_sdedit import MODEL_ID, WanTI2VSDEdit
+from mask_tracking.wan_sdedit import MODEL_ID, WanTI2VSDEdit, check_pipeline_dependencies
 from run_mask_tracking import build_parser
 
 
@@ -68,6 +69,13 @@ class FakePipeline:
 class DiffusersWrapperTests(unittest.TestCase):
     def test_fixed_model_id(self):
         self.assertEqual(MODEL_ID, "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+
+    def test_pipeline_dependency_preflight(self):
+        with patch("mask_tracking.wan_sdedit.importlib.util.find_spec", return_value=object()):
+            check_pipeline_dependencies()
+        with patch("mask_tracking.wan_sdedit.importlib.util.find_spec", return_value=None):
+            with self.assertRaisesRegex(ImportError, "pip install ftfy"):
+                check_pipeline_dependencies()
 
     def test_forwards_video_editing_parameters(self):
         fake = FakePipeline()

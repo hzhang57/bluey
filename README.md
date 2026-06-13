@@ -32,6 +32,8 @@ The final value must be `True`. If packages were replaced during installation,
 restart the Kaggle session before inference.
 
 The first run downloads the fixed Diffusers model from Hugging Face.
+Setting an optional `HF_TOKEN` increases download rate limits. Diffusers Flax
+deprecation warnings are unrelated to this PyTorch pipeline and can be ignored.
 
 Warnings about Kaggle's unused RAPIDS packages such as `dask-cuda`, `cudf`,
 `cuml`, `numba-cuda`, or `cuda-core` do not affect this experiment. Starting a

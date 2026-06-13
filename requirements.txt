@@ -3,6 +3,7 @@ diffusers>=0.38.0
 transformers
 accelerate
 sentencepiece
+ftfy
 opencv-python-headless>=4.13.0.90
 imageio[ffmpeg]>=2.34.0
 numpy>=2.0,<3
