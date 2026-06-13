@@ -18,6 +18,7 @@ from mask_tracking.wan_sdedit import (
     denoise_step_count,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
+    scheduler_noise_diagnostics,
     should_save_denoise_snapshot,
 )
 from run_mask_tracking import build_parser
@@ -170,6 +171,36 @@ class DiffusersWrapperTests(unittest.TestCase):
             if should_save_denoise_snapshot(step, total_steps=45, every=10)
         ]
         self.assertEqual(saved, [10, 20, 30, 40, 45])
+
+    def test_reports_effective_flow_scheduler_noise(self):
+        class FakeScalar:
+            def __init__(self, value):
+                self.value = value
+
+            def item(self):
+                return self.value
+
+            def __truediv__(self, other):
+                return FakeScalar(self.value / other.value)
+
+        scheduler = SimpleNamespace(
+            sigmas=[FakeScalar(0.804)],
+            timesteps=[FakeScalar(804.0)],
+            config=SimpleNamespace(
+                use_flow_sigmas=True,
+                flow_shift=5.0,
+                prediction_type="flow_prediction",
+            ),
+            _sigma_to_alpha_sigma_t=lambda sigma: (
+                FakeScalar(1.0 - sigma.value),
+                sigma,
+            ),
+        )
+        diagnostics = scheduler_noise_diagnostics(scheduler, 0)
+        self.assertAlmostEqual(diagnostics["signal_weight"], 0.196)
+        self.assertAlmostEqual(diagnostics["noise_weight"], 0.804)
+        self.assertTrue(diagnostics["use_flow_sigmas"])
+        self.assertEqual(diagnostics["flow_shift"], 5.0)
 
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(

@@ -53,6 +53,48 @@ def should_save_denoise_snapshot(step: int, total_steps: int, every: int) -> boo
     return step % every == 0 or step == total_steps
 
 
+def scheduler_noise_diagnostics(scheduler: Any, start_idx: int) -> dict[str, Any]:
+    sigma = scheduler.sigmas[start_idx]
+    alpha_t, sigma_t = scheduler._sigma_to_alpha_sigma_t(sigma)
+    config = scheduler.config
+    return {
+        "scheduler_class": scheduler.__class__.__name__,
+        "start_timestep": float(scheduler.timesteps[start_idx].item()),
+        "schedule_sigma": float(sigma.item()),
+        "signal_weight": float(alpha_t.item()),
+        "noise_weight": float(sigma_t.item()),
+        "noise_to_signal_ratio": float((sigma_t / alpha_t).item()),
+        "use_flow_sigmas": bool(getattr(config, "use_flow_sigmas", False)),
+        "flow_shift": float(getattr(config, "flow_shift", 1.0)),
+        "prediction_type": str(getattr(config, "prediction_type", "unknown")),
+    }
+
+
+def verify_scheduler_add_noise(
+    clean: Any,
+    noise: Any,
+    noisy: Any,
+    noise_diagnostics: dict[str, Any],
+) -> dict[str, float]:
+    clean_f = clean.float()
+    noise_f = noise.float()
+    noisy_f = noisy.float()
+    expected = (
+        noise_diagnostics["signal_weight"] * clean_f
+        + noise_diagnostics["noise_weight"] * noise_f
+    )
+    error = (noisy_f - expected).abs()
+    result = {
+        "clean_latent_std": float(clean_f.std().item()),
+        "sampled_noise_std": float(noise_f.std().item()),
+        "noisy_latent_std": float(noisy_f.std().item()),
+        "add_noise_formula_mean_abs_error": float(error.mean().item()),
+        "add_noise_formula_max_abs_error": float(error.max().item()),
+    }
+    del clean_f, noise_f, noisy_f, expected, error
+    return result
+
+
 def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=None) -> Any:
     if vae_class is None or pipeline_class is None:
         try:
@@ -271,6 +313,17 @@ class WanTI2VSDEdit:
         )
 
         pipe.scheduler.set_timesteps(sampling_steps, device=transformer_device)
+        noise_diagnostics = scheduler_noise_diagnostics(pipe.scheduler, start_idx)
+        print(
+            "[noise] "
+            f"scheduler={noise_diagnostics['scheduler_class']} "
+            f"timestep={noise_diagnostics['start_timestep']:.3f} "
+            f"sigma={noise_diagnostics['schedule_sigma']:.4f} "
+            f"signal_weight={noise_diagnostics['signal_weight']:.4f} "
+            f"noise_weight={noise_diagnostics['noise_weight']:.4f} "
+            f"flow_shift={noise_diagnostics['flow_shift']:.2f}",
+            flush=True,
+        )
         timesteps = pipe.scheduler.timesteps
         if hasattr(pipe.scheduler, "set_begin_index"):
             pipe.scheduler.set_begin_index(start_idx)
@@ -284,6 +337,16 @@ class WanTI2VSDEdit:
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
         latents = pipe.scheduler.add_noise(clean, noise, timesteps[:1])
+        add_noise_verification = verify_scheduler_add_noise(
+            clean, noise, latents, noise_diagnostics
+        )
+        print(
+            "[noise] official add_noise formula verification: "
+            f"max_abs_error={add_noise_verification['add_noise_formula_max_abs_error']:.6f} "
+            f"clean_std={add_noise_verification['clean_latent_std']:.4f} "
+            f"noisy_std={add_noise_verification['noisy_latent_std']:.4f}",
+            flush=True,
+        )
         snapshot_count = 0
         if snapshot_callback is not None:
             noisy_video = _decode_video(pipe, latents, torch)
@@ -395,6 +458,8 @@ class WanTI2VSDEdit:
                 "actual_denoise_steps": len(timesteps),
                 "denoise_snapshot_every": snapshot_every,
                 "saved_latent_decode_snapshots": snapshot_count,
+                "initial_noise": noise_diagnostics,
+                "add_noise_verification": add_noise_verification,
                 "vae_roundtrip": vae_stats,
                 "generated_raw": generated_stats,
             },

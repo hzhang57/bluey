@@ -114,6 +114,17 @@ and at the final step; for a 45-step run this saves steps 10, 20, 30, 40, and
 45. Change the interval with `--denoise-save-every` or disable snapshots with
 `--no-save-denoise-steps`.
 
+`strength` controls the fraction of the official scheduler trajectory used for
+denoising; it is not the final noise weight. Wan2.2 TI2V uses the model's
+official `UniPCMultistepScheduler` with flow sigmas and `flow_shift=5.0`.
+Consequently, `strength=0.45` starts near effective `sigma=0.80`, so
+`noisy.mp4` may retain little visible source structure. The exact scheduler
+class, timestep, sigma, signal weight, and noise weight are printed at runtime
+and recorded under `diagnostics.initial_noise` in `manifest.json`. The manifest
+also records latent standard deviations and the numerical error between the
+official `scheduler.add_noise` result and its current signal/noise formula
+under `diagnostics.add_noise_verification`.
+
 The mask score combines generated brightness, low chroma, brightness gain
 relative to the source, and total pixel change. Tune it with
 `--mask-score-threshold` (default `0.20`). Frame 0 is fixed by the official TI2V
