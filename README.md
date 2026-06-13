@@ -51,10 +51,26 @@ python run_mask_tracking.py \
   --output-dir outputs/red_car
 ```
 
+The default `49` frames, `832*480`, and `30` sampling steps are selected for
+Kaggle GPUs. The pipeline uses sequential CPU offload and VAE tiling. This is
+slower than full GPU inference but substantially reduces peak VRAM use.
+
+If the GPU still runs out of memory, restart the Kaggle session and run:
+
+```bash
+python run_mask_tracking.py \
+  --video input.mp4 \
+  --object "the red car" \
+  --frame-num 25 \
+  --size 832*480 \
+  --sampling-steps 20
+```
+
 `--object` accepts an arbitrary referring expression. A run processes one
 continuous clip of `--frame-num` frames, which must have the form `4n+1`.
 Short clips are padded with their final frame. Use `--start-frame` for another
-window. Supported sizes are `1280*704` and `704*1280`.
+window. Supported sizes include `832*480`, `480*832`, `1280*704`, and
+`704*1280`.
 
 For a small sweep:
 

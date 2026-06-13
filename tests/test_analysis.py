@@ -6,7 +6,12 @@ import numpy as np
 
 from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
 from mask_tracking.prompting import build_silhouette_prompt
-from mask_tracking.wan_sdedit import MODEL_ID, WanTI2VSDEdit, check_pipeline_dependencies
+from mask_tracking.wan_sdedit import (
+    MODEL_ID,
+    WanTI2VSDEdit,
+    check_pipeline_dependencies,
+    configure_low_memory_pipeline,
+)
 from run_mask_tracking import build_parser
 
 
@@ -55,15 +60,33 @@ class FakeGenerator:
 class FakeTorch:
     Generator = FakeGenerator
 
+    class cuda:
+        @staticmethod
+        def empty_cache():
+            pass
+
+
+class FakeVAE:
+    def __init__(self):
+        self.tiling_enabled = False
+
+    def enable_tiling(self):
+        self.tiling_enabled = True
+
 
 class FakePipeline:
     def __init__(self):
         self.kwargs = None
+        self.sequential_offload_enabled = False
+        self.vae = FakeVAE()
 
     def __call__(self, **kwargs):
         self.kwargs = kwargs
         frames = np.zeros((1, 5, 4, 6, 3), dtype=np.float32)
         return SimpleNamespace(frames=frames)
+
+    def enable_sequential_cpu_offload(self):
+        self.sequential_offload_enabled = True
 
 
 class DiffusersWrapperTests(unittest.TestCase):
@@ -89,6 +112,18 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(fake.kwargs["guidance_scale"], 4.0)
         self.assertEqual(fake.kwargs["generator"].seed, 123)
         self.assertEqual(len(fake.kwargs["video"]), 5)
+
+    def test_configures_low_memory_pipeline(self):
+        fake = FakePipeline()
+        configure_low_memory_pipeline(fake)
+        self.assertTrue(fake.sequential_offload_enabled)
+        self.assertTrue(fake.vae.tiling_enabled)
+
+    def test_kaggle_friendly_cli_defaults(self):
+        args = build_parser().parse_args(["--video", "input.mp4", "--object", "car"])
+        self.assertEqual(args.frame_num, 49)
+        self.assertEqual(args.size, "832*480")
+        self.assertEqual(args.sampling_steps, 30)
 
     def test_cli_has_no_repository_or_checkpoint_flags(self):
         option_strings = {

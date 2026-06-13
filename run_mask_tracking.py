@@ -17,11 +17,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="outputs/mask_tracking")
     parser.add_argument("--strength", type=float, default=0.45)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--frame-num", type=int, default=121)
+    parser.add_argument("--frame-num", type=int, default=49)
     parser.add_argument("--start-frame", type=int, default=0)
-    parser.add_argument("--size", choices=("1280*704", "704*1280"), default="1280*704")
+    parser.add_argument(
+        "--size",
+        choices=("832*480", "480*832", "1280*704", "704*1280"),
+        default="832*480",
+    )
     parser.add_argument("--fps", type=float, default=24.0)
-    parser.add_argument("--sampling-steps", type=int, default=50)
+    parser.add_argument("--sampling-steps", type=int, default=30)
     parser.add_argument("--guide-scale", type=float, default=5.0)
     parser.add_argument("--white-threshold", type=int, default=220)
     parser.add_argument("--difference-threshold", type=float, default=35.0)

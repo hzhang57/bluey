@@ -25,6 +25,12 @@ def check_pipeline_dependencies() -> None:
         )
 
 
+def configure_low_memory_pipeline(pipeline: Any) -> None:
+    pipeline.enable_sequential_cpu_offload()
+    if hasattr(pipeline.vae, "enable_tiling"):
+        pipeline.vae.enable_tiling()
+
+
 class WanTI2VSDEdit:
     """Thin Diffusers wrapper for source-video silhouette editing."""
 
@@ -50,7 +56,7 @@ class WanTI2VSDEdit:
             pipeline = WanVideoToVideoPipeline.from_pretrained(
                 MODEL_ID, torch_dtype=torch.bfloat16
             )
-            pipeline.enable_model_cpu_offload()
+            configure_low_memory_pipeline(pipeline)
 
         self.torch = torch
         self.pipeline = pipeline
@@ -69,16 +75,27 @@ class WanTI2VSDEdit:
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
             raise ValueError("source_video must have shape [F, H, W, 3]")
 
+        self.torch.cuda.empty_cache()
         generator = self.torch.Generator(device="cpu").manual_seed(seed)
-        output = self.pipeline(
-            prompt=prompt,
-            video=list(source_video),
-            strength=strength,
-            num_inference_steps=sampling_steps,
-            guidance_scale=guide_scale,
-            generator=generator,
-            output_type="np",
-        )
+        try:
+            output = self.pipeline(
+                prompt=prompt,
+                video=list(source_video),
+                strength=strength,
+                num_inference_steps=sampling_steps,
+                guidance_scale=guide_scale,
+                generator=generator,
+                output_type="np",
+            )
+        except RuntimeError as error:
+            message = str(error)
+            if "out of memory" in message.lower() or "CUBLAS_STATUS_ALLOC_FAILED" in message:
+                raise RuntimeError(
+                    "Wan2.2 ran out of GPU memory. Restart the Kaggle session to "
+                    "clear GPU memory, then retry with --frame-num 25 "
+                    "--size 832*480 --sampling-steps 20."
+                ) from error
+            raise
         return _normalize_output(output.frames)
 
 
