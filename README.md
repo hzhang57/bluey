@@ -17,20 +17,26 @@ On a Kaggle CUDA notebook:
 
 ```bash
 %cd /kaggle/working/bluey
-!pip install -r requirements.txt
+!pip install --no-deps -r requirements-kaggle.txt
 ```
 
 Before running, set **Notebook options > Accelerator > GPU**. Verify that the
-environment is not using a CPU-only PyTorch build:
+environment is not using a CPU-only PyTorch build and that the required
+pipeline can be imported:
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -c "import torch; from diffusers import WanVideoToVideoPipeline; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 The final value must be `True`. If packages were replaced during installation,
 restart the Kaggle session before inference.
 
 The first run downloads the fixed Diffusers model from Hugging Face.
+
+Warnings about Kaggle's unused RAPIDS packages such as `dask-cuda`, `cudf`,
+`cuml`, `numba-cuda`, or `cuda-core` do not affect this experiment. Starting a
+fresh GPU session and using `requirements-kaggle.txt` avoids modifying that
+preinstalled CUDA stack.
 
 ## Run
 

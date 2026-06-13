@@ -1,0 +1,6 @@
+# Kaggle already provides torch, transformers, accelerate, NumPy, and OpenCV.
+# Install only the missing Wan pipeline package without upgrading the CUDA stack:
+diffusers==0.38.0
+safetensors>=0.8.0
+sentencepiece
+imageio[ffmpeg]>=2.34.0
