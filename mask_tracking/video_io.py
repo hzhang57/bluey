@@ -89,6 +89,19 @@ def mask_to_rgb(masks: np.ndarray) -> np.ndarray:
     return np.repeat(masks[..., None], 3, axis=-1)
 
 
+def score_to_rgb(score: np.ndarray) -> np.ndarray:
+    if score.ndim != 3:
+        raise ValueError("score must have shape [F,H,W]")
+    frames = [
+        cv2.cvtColor(
+            cv2.applyColorMap(np.clip(frame * 255.0, 0, 255).astype(np.uint8), cv2.COLORMAP_TURBO),
+            cv2.COLOR_BGR2RGB,
+        )
+        for frame in score
+    ]
+    return np.stack(frames)
+
+
 def make_overlay(source: np.ndarray, masks: np.ndarray) -> np.ndarray:
     result = source.astype(np.float32).copy()
     selected = masks > 0
@@ -97,7 +110,7 @@ def make_overlay(source: np.ndarray, masks: np.ndarray) -> np.ndarray:
 
 
 def make_comparison(
-    source: np.ndarray, edited: np.ndarray, masks: np.ndarray, overlay: np.ndarray
+    source: np.ndarray, generated: np.ndarray, masks: np.ndarray, edited: np.ndarray
 ) -> np.ndarray:
     mask_rgb = mask_to_rgb(masks)
-    return np.concatenate([source, edited, mask_rgb, overlay], axis=2)
+    return np.concatenate([source, generated, mask_rgb, edited], axis=2)

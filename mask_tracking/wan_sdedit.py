@@ -3,12 +3,22 @@ from __future__ import annotations
 import gc
 import importlib.metadata
 import importlib.util
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from .analysis import validate_decoded_video
+
 MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 REQUIRED_PIPELINE_PACKAGES = ("ftfy",)
+
+
+@dataclass
+class SDEditResult:
+    generated_raw: np.ndarray
+    vae_roundtrip: np.ndarray
+    diagnostics: dict[str, Any]
 
 
 def check_pipeline_dependencies() -> None:
@@ -83,6 +93,68 @@ def _clear_memory(torch_module: Any) -> None:
     torch_module.cuda.empty_cache()
 
 
+def _clear_vae_cache(pipe: Any) -> None:
+    vae = pipe.vae
+    for name in ("clear_cache", "_clear_cache", "clear_context_parallel_cache"):
+        function = getattr(vae, name, None)
+        if callable(function):
+            try:
+                function()
+                return
+            except TypeError:
+                pass
+    for name in ("_feat_map", "_enc_feat_map", "_features", "_cache"):
+        if hasattr(vae, name):
+            setattr(vae, name, None)
+
+
+def _encode_video(
+    pipe: Any,
+    source_video: np.ndarray,
+    transformer_device: Any,
+    transformer_dtype: Any,
+    torch_module: Any,
+) -> Any:
+    vae_device = next(pipe.vae.parameters()).device
+    vae_dtype = next(pipe.vae.parameters()).dtype
+    tensor = (
+        torch_module.from_numpy(source_video)
+        .permute(3, 0, 1, 2)
+        .unsqueeze(0)
+        .to(device=vae_device, dtype=vae_dtype)
+        .div(127.5)
+        .sub(1.0)
+    )
+    _clear_vae_cache(pipe)
+    try:
+        with torch_module.no_grad():
+            latent = _retrieve_latents(pipe.vae.encode(tensor))
+    finally:
+        _clear_vae_cache(pipe)
+    mean, std = _vae_norm(pipe, latent.device, torch_module)
+    latent = ((latent.float() - mean) * std).to(transformer_device, transformer_dtype)
+    del tensor
+    _clear_memory(torch_module)
+    return latent
+
+
+def _decode_video(pipe: Any, latent: Any, torch_module: Any) -> np.ndarray:
+    vae_device = next(pipe.vae.parameters()).device
+    vae_dtype = next(pipe.vae.parameters()).dtype
+    mean, std = _vae_norm(pipe, latent.device, torch_module)
+    latent = (latent.float() / std + mean).to(vae_device, vae_dtype)
+    _clear_vae_cache(pipe)
+    try:
+        with torch_module.no_grad():
+            decoded = pipe.vae.decode(latent).sample
+    finally:
+        _clear_vae_cache(pipe)
+    result = decoded.squeeze(0).permute(1, 2, 3, 0).float().cpu().numpy()
+    del decoded, latent
+    _clear_memory(torch_module)
+    return np.clip((result + 1.0) * 127.5, 0, 255).astype(np.uint8)
+
+
 def _encode_prompt(
     pipe: Any,
     prompt: str,
@@ -133,7 +205,7 @@ class WanTI2VSDEdit:
         sampling_steps: int = 30,
         guide_scale: float = 5.0,
         max_sequence_length: int = 128,
-    ) -> np.ndarray:
+    ) -> SDEditResult:
         torch, pipe = self.torch, self.pipeline
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
             raise ValueError("source_video must have shape [F, H, W, 3]")
@@ -163,27 +235,18 @@ class WanTI2VSDEdit:
 
         vae_device = getattr(pipe, "_vae_target_device", transformer_device)
         pipe.vae.to(vae_device, dtype=torch.float16)
-        vae_dtype = next(pipe.vae.parameters()).dtype
         print(
             f"[stage 2/5] Encoding source video with VAE on {vae_device}: "
             f"{frames} frames at {width}x{height}...",
             flush=True,
         )
-        video = (
-            torch.from_numpy(source_video)
-            .permute(3, 0, 1, 2)
-            .unsqueeze(0)
-            .to(device=vae_device, dtype=vae_dtype)
-            .div(127.5)
-            .sub(1.0)
-        )
-        with torch.no_grad():
-            clean = _retrieve_latents(pipe.vae.encode(video))
-        mean, std = _vae_norm(pipe, clean.device, torch)
-        clean = ((clean.float() - mean) * std).to(transformer_device, transformer_dtype)
-        del video
-        _clear_memory(torch)
+        clean = _encode_video(pipe, source_video, transformer_device, transformer_dtype, torch)
         print(f"[stage 2/5] Source latent shape={tuple(clean.shape)}", flush=True)
+        print("[stage 2/5] Decoding VAE round-trip diagnostic...", flush=True)
+        vae_roundtrip = _decode_video(pipe, clean, torch)
+        vae_stats = validate_decoded_video(
+            vae_roundtrip, "vae_roundtrip", expected_shape=source_video.shape
+        )
 
         pipe.scheduler.set_timesteps(sampling_steps, device=transformer_device)
         timesteps = pipe.scheduler.timesteps
@@ -244,20 +307,22 @@ class WanTI2VSDEdit:
                 print(f"[stage 4/5] Denoise {index + 1}/{len(timesteps)}", flush=True)
 
         print("[stage 5/5] Decoding edited video...", flush=True)
-        latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
-        mean, std = _vae_norm(pipe, latents.device, torch)
-        latents = (latents.float() / std + mean).to(vae_device, vae_dtype)
-        with torch.no_grad():
-            decoded = pipe.vae.decode(latents).sample
-        result = (
-            decoded.squeeze(0)
-            .permute(1, 2, 3, 0)
-            .float()
-            .cpu()
-            .numpy()
+        generated_latent = (1 - first_frame_mask) * condition + first_frame_mask * latents
+        generated_raw = _decode_video(pipe, generated_latent, torch)
+        generated_stats = validate_decoded_video(
+            generated_raw, "generated_raw", expected_shape=source_video.shape
         )
         print("[stage 5/5] Decode complete.", flush=True)
-        return np.clip((result + 1.0) * 127.5, 0, 255).astype(np.uint8)
+        return SDEditResult(
+            generated_raw=generated_raw,
+            vae_roundtrip=vae_roundtrip,
+            diagnostics={
+                "clean_latent_shape": list(clean.shape),
+                "generated_latent_shape": list(generated_latent.shape),
+                "vae_roundtrip": vae_stats,
+                "generated_raw": generated_stats,
+            },
+        )
 
 
 def diffusers_version() -> str:

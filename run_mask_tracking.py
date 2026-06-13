@@ -28,8 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling-steps", type=int, default=30)
     parser.add_argument("--guide-scale", type=float, default=5.0)
     parser.add_argument("--max-sequence-length", type=int, default=128)
-    parser.add_argument("--white-threshold", type=int, default=220)
-    parser.add_argument("--difference-threshold", type=float, default=35.0)
+    parser.add_argument("--mask-score-threshold", type=float, default=0.20)
     parser.add_argument("--morphology-kernel", type=int, default=3)
     return parser
 
@@ -41,13 +40,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
+    from mask_tracking.analysis import (
+        composite_white_target,
+        extract_silhouette_mask,
+        temporal_metrics,
+        video_statistics,
+    )
     from mask_tracking.prompting import build_silhouette_prompt
     from mask_tracking.video_io import (
         make_comparison,
-        make_overlay,
         mask_to_rgb,
         read_video_clip,
+        score_to_rgb,
         write_video,
     )
     from mask_tracking.wan_sdedit import MODEL_ID, WanTI2VSDEdit, diffusers_version
@@ -65,7 +69,7 @@ def main() -> None:
     )
     prompt = build_silhouette_prompt(args.object_text)
     pipeline = WanTI2VSDEdit()
-    edited = pipeline.generate(
+    generation = pipeline.generate(
         source,
         prompt,
         args.strength,
@@ -74,26 +78,33 @@ def main() -> None:
         guide_scale=args.guide_scale,
         max_sequence_length=args.max_sequence_length,
     )
-    masks = extract_silhouette_mask(
+    generated_raw = generation.generated_raw
+    masks, mask_score = extract_silhouette_mask(
         source,
-        edited,
-        white_threshold=args.white_threshold,
-        difference_threshold=args.difference_threshold,
+        generated_raw,
+        score_threshold=args.mask_score_threshold,
         morphology_kernel=args.morphology_kernel,
     )
-    overlay = make_overlay(source, masks)
-    comparison = make_comparison(source, edited, masks, overlay)
+    edited = composite_white_target(source, masks)
+    comparison = make_comparison(source, generated_raw, masks, edited)
     fps = args.fps or source_fps
     write_video(output_dir / "source.mp4", source, fps)
+    write_video(output_dir / "generated_raw.mp4", generated_raw, fps)
     write_video(output_dir / "edited.mp4", edited, fps)
     write_video(output_dir / "raw_mask.mp4", mask_to_rgb(masks), fps)
-    write_video(output_dir / "overlay.mp4", overlay, fps)
+    write_video(output_dir / "mask_score.mp4", score_to_rgb(mask_score), fps)
+    write_video(output_dir / "vae_roundtrip.mp4", generation.vae_roundtrip, fps)
     write_video(output_dir / "side_by_side.mp4", comparison, fps)
 
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "research_warning": (
-            "No-GT discovery probe. Temporal metrics do not measure segmentation accuracy."
+            "No-GT discovery probe. generated_raw.mp4 is model evidence; "
+            "edited.mp4 is composited from the source and extracted mask."
+        ),
+        "first_frame_policy": (
+            "Official TI2V fixes the first-frame condition. Frame 0 mask is empty "
+            "and excluded from temporal metrics."
         ),
         "object": args.object_text,
         "prompt": prompt,
@@ -101,7 +112,18 @@ def main() -> None:
         "model_id": MODEL_ID,
         "parameters": vars(args),
         "preprocessing": preprocessing,
-        "metrics": temporal_metrics(masks),
+        "metrics": temporal_metrics(masks, skip_first_frame=True),
+        "diagnostics": {
+            **generation.diagnostics,
+            "source": video_statistics(source),
+            "edited_composite": video_statistics(edited),
+            "mask_score": {
+                "min": float(mask_score.min()),
+                "max": float(mask_score.max()),
+                "mean": float(mask_score.mean()),
+                "std": float(mask_score.std()),
+            },
+        },
         "environment": {
             "python": platform.python_version(),
             "diffusers": diffusers_version(),

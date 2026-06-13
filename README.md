@@ -92,14 +92,28 @@ for strength in 0.30 0.45 0.60; do
 done
 ```
 
-Each run saves the source, edited video, extracted raw mask, overlay,
-side-by-side visualization, and a `manifest.json` containing parameters and
-no-GT temporal stability diagnostics.
+Each run saves:
+
+- `generated_raw.mp4`: unmodified Wan output and the primary research evidence.
+- `raw_mask.mp4`: binary mask extracted from relative whitening.
+- `mask_score.mp4`: continuous relative-whitening score heatmap.
+- `edited.mp4`: source video composited with pure white only inside the mask.
+- `vae_roundtrip.mp4`: source video after Wan VAE encode/decode only.
+- `side_by_side.mp4`: source, raw generation, mask, and final composite.
+- `manifest.json`: parameters, pixel statistics, mask coverage, and no-GT
+  temporal stability diagnostics.
+
+The mask score combines generated brightness, low chroma, brightness gain
+relative to the source, and total pixel change. Tune it with
+`--mask-score-threshold` (default `0.20`). Frame 0 is fixed by the official TI2V
+condition, so its mask is forced empty, its composite remains the original
+source frame, and temporal metrics start at frame 1.
 
 ## Interpretation
 
-A positive result requires the white silhouette to remain attached to the same
-object through motion and occlusion while leaving the background unchanged.
-The generated mask is extracted only from pixels that became white relative to
-the source. The metrics measure output stability, not segmentation accuracy;
-without ground-truth masks this remains a discovery probe.
+A positive result requires the white edit in `generated_raw.mp4` to remain
+attached to the same object through motion and occlusion. `edited.mp4` always
+keeps non-mask pixels from the source by construction, so it is a visualization
+of the extracted mask and is not evidence that Wan preserved the background.
+The metrics measure output stability, not segmentation accuracy; without
+ground-truth masks this remains a discovery probe.

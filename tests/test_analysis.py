@@ -4,10 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
+from mask_tracking.analysis import (
+    composite_white_target,
+    extract_silhouette_mask,
+    temporal_metrics,
+    validate_decoded_video,
+)
 from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
+    _clear_vae_cache,
     check_pipeline_dependencies,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
@@ -27,24 +33,58 @@ class PromptTests(unittest.TestCase):
 
 
 class AnalysisTests(unittest.TestCase):
-    def test_extracts_only_changed_white_pixels(self):
-        source = np.zeros((2, 8, 8, 3), dtype=np.uint8)
-        edited = source.copy()
-        edited[:, 2:6, 2:6] = 255
-        masks = extract_silhouette_mask(source, edited, morphology_kernel=1)
-        self.assertEqual(int((masks > 0).sum()), 2 * 4 * 4)
+    def test_extracts_gray_white_target_after_first_frame(self):
+        source = np.zeros((3, 8, 8, 3), dtype=np.uint8)
+        source[:, 2:6, 2:6] = [180, 20, 20]
+        generated = source.copy()
+        generated[:, 2:6, 2:6] = [210, 210, 210]
+        masks, score = extract_silhouette_mask(source, generated, morphology_kernel=1)
+        self.assertFalse(masks[0].any())
+        self.assertEqual(int((masks[1:] > 0).sum()), 2 * 4 * 4)
+        self.assertGreater(float(score[1, 3, 3]), 0.20)
 
     def test_unchanged_white_is_not_a_mask(self):
-        source = np.full((1, 4, 4, 3), 255, dtype=np.uint8)
-        masks = extract_silhouette_mask(source, source, morphology_kernel=1)
+        source = np.full((2, 4, 4, 3), 255, dtype=np.uint8)
+        masks, score = extract_silhouette_mask(source, source, morphology_kernel=1)
         self.assertFalse(masks.any())
+        self.assertFalse(score.any())
+
+    def test_composite_preserves_background_and_first_frame(self):
+        source = np.arange(3 * 4 * 4 * 3, dtype=np.uint8).reshape(3, 4, 4, 3)
+        masks = np.zeros((3, 4, 4), dtype=np.uint8)
+        masks[:, 1:3, 1:3] = 255
+        edited = composite_white_target(source, masks)
+        self.assertTrue(np.array_equal(edited[0], source[0]))
+        selected = masks > 0
+        selected[0] = False
+        self.assertTrue(np.all(edited[selected] == 255))
+        self.assertTrue(np.array_equal(edited[~selected], source[~selected]))
 
     def test_stable_mask_metrics(self):
         masks = np.zeros((3, 4, 4), dtype=np.uint8)
-        masks[:, 1:3, 1:3] = 255
+        masks[1:, 1:3, 1:3] = 255
         metrics = temporal_metrics(masks)
+        self.assertTrue(metrics["skipped_first_frame"])
+        self.assertEqual(len(metrics["foreground_fraction_per_frame"]), 2)
         self.assertEqual(metrics["mean_consecutive_iou"], 1.0)
         self.assertEqual(metrics["mean_flicker_rate"], 0.0)
+
+    def test_near_black_decode_has_stage_diagnostic(self):
+        black = np.zeros((2, 4, 4, 3), dtype=np.uint8)
+        with self.assertRaisesRegex(RuntimeError, "vae_roundtrip decoded to a near-black"):
+            validate_decoded_video(black, "vae_roundtrip")
+
+    def test_non_black_decode_returns_statistics(self):
+        video = np.full((2, 4, 4, 3), 128, dtype=np.uint8)
+        stats = validate_decoded_video(video, "generated_raw")
+        self.assertEqual(stats["mean"], 128.0)
+
+    def test_decode_shape_mismatch_has_stage_diagnostic(self):
+        video = np.full((2, 4, 4, 3), 128, dtype=np.uint8)
+        with self.assertRaisesRegex(RuntimeError, "generated_raw decoded to shape"):
+            validate_decoded_video(
+                video, "generated_raw", expected_shape=(3, 4, 4, 3)
+            )
 
 
 class FakeGenerator:
@@ -114,6 +154,15 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(noise_strength_to_start_idx(0.5, 30), 15)
         self.assertEqual(noise_strength_to_start_idx(1.0, 30), 0)
 
+    def test_vae_uses_official_cache_reset(self):
+        vae = SimpleNamespace(
+            _feat_map=["stale"],
+            clear_cache=MagicMock(side_effect=lambda: setattr(vae, "_feat_map", [None])),
+        )
+        _clear_vae_cache(SimpleNamespace(vae=vae))
+        vae.clear_cache.assert_called_once_with()
+        self.assertEqual(vae._feat_map, [None])
+
     def test_loads_official_ti2v_pipeline_configuration(self):
         vae = object()
         pipeline = FakePipeline()
@@ -142,6 +191,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(args.size, "832*480")
         self.assertEqual(args.sampling_steps, 30)
         self.assertEqual(args.max_sequence_length, 128)
+        self.assertEqual(args.mask_score_threshold, 0.20)
 
     def test_cli_has_no_repository_or_checkpoint_flags(self):
         option_strings = {
@@ -151,6 +201,9 @@ class DiffusersWrapperTests(unittest.TestCase):
         }
         self.assertNotIn("--wan-repo", option_strings)
         self.assertNotIn("--wan-checkpoint", option_strings)
+        self.assertNotIn("--white-threshold", option_strings)
+        self.assertNotIn("--difference-threshold", option_strings)
+        self.assertIn("--mask-score-threshold", option_strings)
 
 
 if __name__ == "__main__":
