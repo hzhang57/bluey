@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Total scheduler steps before strength truncation; actual denoise steps are approximately strength * this value.",
     )
     parser.add_argument("--guide-scale", type=float, default=5.0)
+    parser.add_argument("--negative-prompt", default="")
     parser.add_argument("--max-sequence-length", type=int, default=128)
     parser.add_argument("--mask-score-threshold", type=float, default=0.20)
     parser.add_argument("--morphology-kernel", type=int, default=3)
@@ -137,6 +138,7 @@ def main() -> None:
         max_sequence_length=args.max_sequence_length,
         snapshot_callback=save_snapshot if args.save_denoise_steps else None,
         snapshot_every=args.denoise_save_every,
+        negative_prompt=args.negative_prompt,
     )
     generated_raw = generation.generated_raw
     masks, mask_score = extract_silhouette_mask(

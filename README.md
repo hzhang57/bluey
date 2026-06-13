@@ -46,6 +46,7 @@ preinstalled CUDA stack.
 python run_mask_tracking.py \
   --video input.mp4 \
   --object "the red car" \
+  --negative-prompt "" \
   --strength 0.45 \
   --seed 42 \
   --output-dir outputs/red_car
@@ -64,6 +65,15 @@ The checkpoint's official `expand_timesteps=True` transformer interface is
 still used. In text-only mode its token mask is all ones, so every spatiotemporal
 token receives the current scheduler timestep; no first-frame token is assigned
 timestep zero.
+
+Text is injected through classifier-free guidance (CFG). With the default
+`--guide-scale 5.0`, every denoise step runs one positive-prompt Transformer
+forward and one negative-prompt Transformer forward, then combines them as
+`uncond + scale * (cond - uncond)`. `--negative-prompt` defaults to an empty
+string. With `--guide-scale 1.0`, only the positive-prompt forward runs. The
+manifest records prompts, guidance scale, forward counts, and per-step
+conditional/unconditional/guided prediction statistics under
+`diagnostics.text_cfg`.
 
 If the GPU still runs out of memory, restart the Kaggle session and run:
 

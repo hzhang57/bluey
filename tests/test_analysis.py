@@ -14,6 +14,8 @@ from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
     _clear_vae_cache,
+    _encode_prompt,
+    _predict_with_cfg,
     _text_only_timestep,
     add_noise_at_timestep,
     check_pipeline_dependencies,
@@ -253,6 +255,118 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(tuple(expanded.shape), (1, 7 * 2 * 3))
         self.assertTrue(torch.all(expanded == timestep))
 
+    def test_encodes_positive_and_negative_prompts_for_cfg(self):
+        import torch
+
+        calls = []
+
+        def encode(prompt, **kwargs):
+            calls.append(prompt)
+            return torch.ones((1, 2, 3))
+
+        pipe = SimpleNamespace(
+            _get_t5_prompt_embeds=encode,
+            text_encoder=SimpleNamespace(device="cpu", dtype=torch.float32),
+        )
+        positive, negative = _encode_prompt(
+            pipe,
+            "paint the car white",
+            "black background",
+            5.0,
+            "cpu",
+            torch.float32,
+            128,
+        )
+        self.assertEqual(calls, ["paint the car white", "black background"])
+        self.assertEqual(tuple(positive.shape), tuple(negative.shape))
+
+    def test_guidance_one_does_not_encode_negative_prompt(self):
+        import torch
+
+        calls = []
+
+        def encode(prompt, **kwargs):
+            calls.append(prompt)
+            return torch.ones((1, 2, 3))
+
+        pipe = SimpleNamespace(
+            _get_t5_prompt_embeds=encode,
+            text_encoder=SimpleNamespace(device="cpu", dtype=torch.float32),
+        )
+        _, negative = _encode_prompt(
+            pipe,
+            "paint the car white",
+            "black background",
+            1.0,
+            "cpu",
+            torch.float32,
+            128,
+        )
+        self.assertEqual(calls, ["paint the car white"])
+        self.assertIsNone(negative)
+
+    def test_cfg_runs_two_forwards_and_uses_standard_formula(self):
+        import torch
+
+        class Transformer:
+            dtype = torch.float32
+
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, **kwargs):
+                embeds = kwargs["encoder_hidden_states"]
+                self.calls.append(kwargs)
+                return (embeds.clone(),)
+
+        transformer = Transformer()
+        pipe = SimpleNamespace(transformer=transformer)
+        conditional = torch.tensor([[[[[3.0, 5.0]]]]])
+        unconditional = torch.tensor([[[[[1.0, 2.0]]]]])
+        guided, diagnostics = _predict_with_cfg(
+            pipe,
+            torch.zeros_like(conditional),
+            torch.tensor([1.0]),
+            conditional,
+            unconditional,
+            5.0,
+            torch,
+        )
+        expected = unconditional + 5.0 * (conditional - unconditional)
+        self.assertTrue(torch.equal(guided, expected))
+        self.assertIs(transformer.calls[0]["encoder_hidden_states"], conditional)
+        self.assertIs(transformer.calls[1]["encoder_hidden_states"], unconditional)
+        self.assertEqual(
+            tuple(transformer.calls[0]["hidden_states"].shape),
+            tuple(conditional.shape),
+        )
+        self.assertTrue(diagnostics["cfg_enabled"])
+        self.assertEqual(diagnostics["transformer_forward_count"], 2)
+        self.assertIsNotNone(diagnostics["unconditional"])
+
+    def test_guidance_one_runs_only_conditional_forward(self):
+        import torch
+
+        transformer = MagicMock()
+        transformer.dtype = torch.float32
+        conditional = torch.tensor([[[[[3.0, 5.0]]]]])
+        transformer.return_value = (conditional,)
+        pipe = SimpleNamespace(transformer=transformer)
+        guided, diagnostics = _predict_with_cfg(
+            pipe,
+            torch.zeros_like(conditional),
+            torch.tensor([1.0]),
+            conditional,
+            None,
+            1.0,
+            torch,
+        )
+        self.assertTrue(torch.equal(guided, conditional))
+        self.assertEqual(transformer.call_count, 1)
+        self.assertFalse(diagnostics["cfg_enabled"])
+        self.assertEqual(diagnostics["transformer_forward_count"], 1)
+        self.assertIsNone(diagnostics["unconditional"])
+
     def test_vae_uses_official_cache_reset(self):
         vae = SimpleNamespace(
             _feat_map=["stale"],
@@ -291,6 +405,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(args.sampling_steps, 100)
         self.assertEqual(args.max_sequence_length, 128)
         self.assertEqual(args.mask_score_threshold, 0.20)
+        self.assertEqual(args.negative_prompt, "")
         self.assertTrue(args.save_denoise_steps)
         self.assertEqual(args.denoise_save_every, 10)
 

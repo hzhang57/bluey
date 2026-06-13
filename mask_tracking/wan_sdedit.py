@@ -299,6 +299,7 @@ def _decode_video(pipe: Any, latent: Any, torch_module: Any) -> np.ndarray:
 def _encode_prompt(
     pipe: Any,
     prompt: str,
+    negative_prompt: str,
     guide_scale: float,
     device: Any,
     dtype: Any,
@@ -314,13 +315,69 @@ def _encode_prompt(
     negative_embeds = None
     if guide_scale > 1.0:
         negative_embeds = pipe._get_t5_prompt_embeds(
-            prompt="",
+            prompt=negative_prompt,
             num_videos_per_prompt=1,
             max_sequence_length=max_sequence_length,
             device=pipe.text_encoder.device,
             dtype=pipe.text_encoder.dtype,
         ).to(device=device, dtype=dtype)
     return prompt_embeds, negative_embeds
+
+
+def _prediction_statistics(prediction: Any) -> dict[str, float]:
+    values = prediction.float()
+    return {
+        "mean": float(values.mean().item()),
+        "std": float(values.std().item()),
+        "min": float(values.min().item()),
+        "max": float(values.max().item()),
+        "norm": float(values.norm().item()),
+    }
+
+
+def _predict_with_cfg(
+    pipe: Any,
+    latents: Any,
+    timestep_batch: Any,
+    prompt_embeds: Any,
+    negative_embeds: Any | None,
+    guide_scale: float,
+    torch_module: Any,
+) -> tuple[Any, dict[str, Any]]:
+    transformer_dtype = pipe.transformer.dtype
+    hidden_states = latents.to(transformer_dtype)
+    with torch_module.no_grad(), _model_cache_context(pipe.transformer, "cond"):
+        conditional = pipe.transformer(
+            hidden_states=hidden_states,
+            timestep=timestep_batch,
+            encoder_hidden_states=prompt_embeds,
+            return_dict=False,
+        )[0]
+
+    unconditional = None
+    guided = conditional
+    forward_count = 1
+    if negative_embeds is not None:
+        with torch_module.no_grad(), _model_cache_context(pipe.transformer, "uncond"):
+            unconditional = pipe.transformer(
+                hidden_states=hidden_states,
+                timestep=timestep_batch,
+                encoder_hidden_states=negative_embeds,
+                return_dict=False,
+            )[0]
+        guided = unconditional + guide_scale * (conditional - unconditional)
+        forward_count = 2
+
+    diagnostics = {
+        "cfg_enabled": unconditional is not None,
+        "transformer_forward_count": forward_count,
+        "conditional": _prediction_statistics(conditional),
+        "unconditional": (
+            _prediction_statistics(unconditional) if unconditional is not None else None
+        ),
+        "guided": _prediction_statistics(guided),
+    }
+    return guided, diagnostics
 
 
 class WanFullVideoSDEdit:
@@ -348,6 +405,7 @@ class WanFullVideoSDEdit:
         max_sequence_length: int = 128,
         snapshot_callback: SnapshotCallback | None = None,
         snapshot_every: int = 10,
+        negative_prompt: str = "",
     ) -> SDEditResult:
         torch, pipe = self.torch, self.pipeline
         if source_video.ndim != 4 or source_video.shape[-1] != 3:
@@ -369,6 +427,7 @@ class WanFullVideoSDEdit:
         prompt_embeds, negative_embeds = _encode_prompt(
             pipe,
             prompt,
+            negative_prompt,
             guide_scale,
             transformer_device,
             transformer_dtype,
@@ -379,6 +438,13 @@ class WanFullVideoSDEdit:
         del text_encoder
         _clear_memory(torch)
         print("[stage 1/5] Text prompt encoded; T5 released.", flush=True)
+        cfg_enabled = negative_embeds is not None
+        print(
+            f"[cfg] enabled={cfg_enabled} guidance_scale={guide_scale} "
+            f"forwards_per_step={2 if cfg_enabled else 1} "
+            f"negative_prompt={negative_prompt!r}",
+            flush=True,
+        )
 
         vae_device = getattr(pipe, "_vae_target_device", transformer_device)
         pipe.vae.to(vae_device, dtype=torch.float16)
@@ -454,25 +520,25 @@ class WanFullVideoSDEdit:
         )
 
         last_step_video = None
+        cfg_step_diagnostics = []
         for index, timestep in enumerate(timesteps):
             timestep_batch = _text_only_timestep(pipe, latents, timestep, torch)
-            with torch.no_grad(), _model_cache_context(pipe.transformer, "cond"):
-                prediction = pipe.transformer(
-                    hidden_states=latents.to(transformer_dtype),
-                    timestep=timestep_batch,
-                    encoder_hidden_states=prompt_embeds,
-                    return_dict=False,
-                )[0]
-            with torch.no_grad():
-                if negative_embeds is not None:
-                    with _model_cache_context(pipe.transformer, "uncond"):
-                        uncond = pipe.transformer(
-                            hidden_states=latents.to(transformer_dtype),
-                            timestep=timestep_batch,
-                            encoder_hidden_states=negative_embeds,
-                            return_dict=False,
-                        )[0]
-                    prediction = uncond + guide_scale * (prediction - uncond)
+            prediction, cfg_diagnostics = _predict_with_cfg(
+                pipe,
+                latents,
+                timestep_batch,
+                prompt_embeds,
+                negative_embeds,
+                guide_scale,
+                torch,
+            )
+            cfg_step_diagnostics.append(
+                {
+                    "step": index + 1,
+                    "timestep": float(timestep.item()),
+                    **cfg_diagnostics,
+                }
+            )
             latents = pipe.scheduler.step(prediction, timestep, latents, return_dict=False)[0]
             step_number = index + 1
             should_save_snapshot = (
@@ -499,7 +565,21 @@ class WanFullVideoSDEdit:
                 )
                 snapshot_count += 1
             if index == 0 or (index + 1) % 5 == 0 or index + 1 == len(timesteps):
-                print(f"[stage 4/5] Denoise {index + 1}/{len(timesteps)}", flush=True)
+                cond_stats = cfg_diagnostics["conditional"]
+                guided_stats = cfg_diagnostics["guided"]
+                uncond_stats = cfg_diagnostics["unconditional"]
+                uncond_text = (
+                    f" uncond_std={uncond_stats['std']:.4f}"
+                    if uncond_stats is not None
+                    else ""
+                )
+                print(
+                    f"[stage 4/5] Denoise {index + 1}/{len(timesteps)} "
+                    f"forwards={cfg_diagnostics['transformer_forward_count']} "
+                    f"cond_std={cond_stats['std']:.4f}{uncond_text} "
+                    f"guided_std={guided_stats['std']:.4f}",
+                    flush=True,
+                )
 
         print("[stage 5/5] Decoding edited video...", flush=True)
         generated_latent = latents
@@ -521,6 +601,17 @@ class WanFullVideoSDEdit:
                 "conditioning_mode": "full_video_latent_text_only",
                 "first_frame_condition": False,
                 "text_only_latent_contract": latent_contract,
+                "text_cfg": {
+                    "enabled": cfg_enabled,
+                    "guidance_scale": guide_scale,
+                    "positive_prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "transformer_forwards_per_step": 2 if cfg_enabled else 1,
+                    "total_transformer_forwards": (
+                        len(timesteps) * (2 if cfg_enabled else 1)
+                    ),
+                    "steps": cfg_step_diagnostics,
+                },
                 "total_scheduler_steps": sampling_steps,
                 "denoise_start_index": start_idx,
                 "actual_denoise_steps": len(timesteps),
