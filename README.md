@@ -53,7 +53,9 @@ python run_mask_tracking.py \
 
 The default `49` frames, `832*480`, and `30` sampling steps are selected for
 Kaggle GPUs. The pipeline uses sequential CPU offload and VAE tiling. This is
-slower than full GPU inference but substantially reduces peak VRAM use.
+slower than full GPU inference but substantially reduces peak VRAM use. The
+Wan VAE is loaded in `float32`, as required by the official Diffusers V2V
+example, while the transformer uses `bfloat16`.
 
 If the GPU still runs out of memory, restart the Kaggle session and run:
 

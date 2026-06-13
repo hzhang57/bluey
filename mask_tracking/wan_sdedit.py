@@ -31,6 +31,30 @@ def configure_low_memory_pipeline(pipeline: Any) -> None:
         pipeline.vae.enable_tiling()
 
 
+def load_diffusers_pipeline(
+    torch_module: Any, vae_class: Any | None = None, pipeline_class: Any | None = None
+) -> Any:
+    if vae_class is None or pipeline_class is None:
+        try:
+            from diffusers import AutoencoderKLWan, WanVideoToVideoPipeline
+        except ImportError as error:
+            raise ImportError(
+                "WanVideoToVideoPipeline is unavailable. Install the project "
+                "requirements with: pip install -r requirements.txt"
+            ) from error
+        vae_class = AutoencoderKLWan
+        pipeline_class = WanVideoToVideoPipeline
+
+    vae = vae_class.from_pretrained(
+        MODEL_ID, subfolder="vae", torch_dtype=torch_module.float32
+    )
+    pipeline = pipeline_class.from_pretrained(
+        MODEL_ID, vae=vae, torch_dtype=torch_module.bfloat16
+    )
+    configure_low_memory_pipeline(pipeline)
+    return pipeline
+
+
 class WanTI2VSDEdit:
     """Thin Diffusers wrapper for source-video silhouette editing."""
 
@@ -46,17 +70,7 @@ class WanTI2VSDEdit:
                     "On Kaggle, open Notebook options, set Accelerator to GPU, then "
                     "restart the session before running this command."
                 )
-            try:
-                from diffusers import WanVideoToVideoPipeline
-            except ImportError as error:
-                raise ImportError(
-                    "WanVideoToVideoPipeline is unavailable. Install the project "
-                    "requirements with: pip install -r requirements.txt"
-                ) from error
-            pipeline = WanVideoToVideoPipeline.from_pretrained(
-                MODEL_ID, torch_dtype=torch.bfloat16
-            )
-            configure_low_memory_pipeline(pipeline)
+            pipeline = load_diffusers_pipeline(torch)
 
         self.torch = torch
         self.pipeline = pipeline

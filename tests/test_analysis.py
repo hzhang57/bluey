@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -11,6 +11,7 @@ from mask_tracking.wan_sdedit import (
     WanTI2VSDEdit,
     check_pipeline_dependencies,
     configure_low_memory_pipeline,
+    load_diffusers_pipeline,
 )
 from run_mask_tracking import build_parser
 
@@ -58,6 +59,8 @@ class FakeGenerator:
 
 
 class FakeTorch:
+    float32 = "float32"
+    bfloat16 = "bfloat16"
     Generator = FakeGenerator
 
     class cuda:
@@ -118,6 +121,22 @@ class DiffusersWrapperTests(unittest.TestCase):
         configure_low_memory_pipeline(fake)
         self.assertTrue(fake.sequential_offload_enabled)
         self.assertTrue(fake.vae.tiling_enabled)
+
+    def test_loads_vae_in_float32_and_pipeline_in_bfloat16(self):
+        vae = object()
+        pipeline = FakePipeline()
+        load_vae = MagicMock(return_value=vae)
+        load_pipeline = MagicMock(return_value=pipeline)
+        vae_class = SimpleNamespace(from_pretrained=load_vae)
+        pipeline_class = SimpleNamespace(from_pretrained=load_pipeline)
+        result = load_diffusers_pipeline(FakeTorch, vae_class, pipeline_class)
+        self.assertIs(result, pipeline)
+        load_vae.assert_called_once_with(
+            MODEL_ID, subfolder="vae", torch_dtype=FakeTorch.float32
+        )
+        load_pipeline.assert_called_once_with(
+            MODEL_ID, vae=vae, torch_dtype=FakeTorch.bfloat16
+        )
 
     def test_kaggle_friendly_cli_defaults(self):
         args = build_parser().parse_args(["--video", "input.mp4", "--object", "car"])
