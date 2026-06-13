@@ -16,7 +16,12 @@ class WanTI2VSDEdit:
 
         if pipeline is None:
             if not torch.cuda.is_available():
-                raise RuntimeError("Wan2.2 video-to-video inference requires a CUDA GPU")
+                raise RuntimeError(
+                    "Wan2.2 video-to-video inference requires CUDA, but this Python "
+                    f"environment has torch {torch.__version__} and no visible GPU. "
+                    "On Kaggle, open Notebook options, set Accelerator to GPU, then "
+                    "restart the session before running this command."
+                )
             try:
                 from diffusers import WanVideoToVideoPipeline
             except ImportError as error:

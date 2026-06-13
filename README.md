@@ -20,6 +20,16 @@ On a Kaggle CUDA notebook:
 !pip install -r requirements.txt
 ```
 
+Before running, set **Notebook options > Accelerator > GPU**. Verify that the
+environment is not using a CPU-only PyTorch build:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+The final value must be `True`. If packages were replaced during installation,
+restart the Kaggle session before inference.
+
 The first run downloads the fixed Diffusers model from Hugging Face.
 
 ## Run
