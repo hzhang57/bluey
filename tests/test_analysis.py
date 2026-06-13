@@ -8,10 +8,9 @@ from mask_tracking.analysis import extract_silhouette_mask, temporal_metrics
 from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
-    WanTI2VSDEdit,
     check_pipeline_dependencies,
-    configure_low_memory_pipeline,
     load_diffusers_pipeline,
+    noise_strength_to_start_idx,
 )
 from run_mask_tracking import build_parser
 
@@ -60,36 +59,44 @@ class FakeGenerator:
 
 class FakeTorch:
     float32 = "float32"
+    float16 = "float16"
     bfloat16 = "bfloat16"
-    Generator = FakeGenerator
 
     class cuda:
         @staticmethod
         def empty_cache():
             pass
 
+        @staticmethod
+        def device_count():
+            return 2
+
+    @staticmethod
+    def device(name):
+        return name
+
 
 class FakeVAE:
     def __init__(self):
-        self.tiling_enabled = False
+        self.slicing_enabled = False
+        self.moves = []
 
-    def enable_tiling(self):
-        self.tiling_enabled = True
+    def enable_slicing(self):
+        self.slicing_enabled = True
+
+    def to(self, *args, **kwargs):
+        self.moves.append((args, kwargs))
 
 
 class FakePipeline:
     def __init__(self):
-        self.kwargs = None
-        self.sequential_offload_enabled = False
         self.vae = FakeVAE()
+        self.transformer = SimpleNamespace(to=MagicMock())
+        self.text_encoder = SimpleNamespace(to=MagicMock())
+        self.registered_config = {}
 
-    def __call__(self, **kwargs):
-        self.kwargs = kwargs
-        frames = np.zeros((1, 5, 4, 6, 3), dtype=np.float32)
-        return SimpleNamespace(frames=frames)
-
-    def enable_sequential_cpu_offload(self):
-        self.sequential_offload_enabled = True
+    def register_to_config(self, **kwargs):
+        self.registered_config.update(kwargs)
 
 
 class DiffusersWrapperTests(unittest.TestCase):
@@ -103,26 +110,11 @@ class DiffusersWrapperTests(unittest.TestCase):
             with self.assertRaisesRegex(ImportError, "pip install ftfy"):
                 check_pipeline_dependencies()
 
-    def test_forwards_video_editing_parameters(self):
-        fake = FakePipeline()
-        wrapper = WanTI2VSDEdit(pipeline=fake)
-        wrapper.torch = FakeTorch
-        source = np.zeros((5, 4, 6, 3), dtype=np.uint8)
-        result = wrapper.generate(source, "paint it", 0.45, 123, 20, 4.0)
-        self.assertEqual(result.shape, source.shape)
-        self.assertEqual(fake.kwargs["strength"], 0.45)
-        self.assertEqual(fake.kwargs["num_inference_steps"], 20)
-        self.assertEqual(fake.kwargs["guidance_scale"], 4.0)
-        self.assertEqual(fake.kwargs["generator"].seed, 123)
-        self.assertEqual(len(fake.kwargs["video"]), 5)
+    def test_strength_maps_to_scheduler_start(self):
+        self.assertEqual(noise_strength_to_start_idx(0.5, 30), 15)
+        self.assertEqual(noise_strength_to_start_idx(1.0, 30), 0)
 
-    def test_configures_low_memory_pipeline(self):
-        fake = FakePipeline()
-        configure_low_memory_pipeline(fake)
-        self.assertTrue(fake.sequential_offload_enabled)
-        self.assertTrue(fake.vae.tiling_enabled)
-
-    def test_loads_vae_in_float32_and_pipeline_in_bfloat16(self):
+    def test_loads_official_ti2v_pipeline_configuration(self):
         vae = object()
         pipeline = FakePipeline()
         load_vae = MagicMock(return_value=vae)
@@ -132,11 +124,15 @@ class DiffusersWrapperTests(unittest.TestCase):
         result = load_diffusers_pipeline(FakeTorch, vae_class, pipeline_class)
         self.assertIs(result, pipeline)
         load_vae.assert_called_once_with(
-            MODEL_ID, subfolder="vae", torch_dtype=FakeTorch.float32
+            MODEL_ID, subfolder="vae", torch_dtype=FakeTorch.float16
         )
         load_pipeline.assert_called_once_with(
             MODEL_ID, vae=vae, torch_dtype=FakeTorch.bfloat16
         )
+        self.assertTrue(pipeline.registered_config["expand_timesteps"])
+        pipeline.transformer.to.assert_called_once_with("cuda:0")
+        pipeline.text_encoder.to.assert_called_once_with("cpu")
+        self.assertTrue(pipeline.vae.slicing_enabled)
 
     def test_kaggle_friendly_cli_defaults(self):
         args = build_parser().parse_args(["--video", "input.mp4", "--object", "car"])

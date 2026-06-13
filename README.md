@@ -2,7 +2,8 @@
 
 This experiment probes whether a frozen video editing model can keep a local
 white silhouette edit attached to a text-specified object over time. It uses
-Diffusers `WanVideoToVideoPipeline` with the fixed model:
+Diffusers `WanImageToVideoPipeline` with full-video latent SDEdit and the fixed
+model:
 
 ```text
 Wan-AI/Wan2.2-TI2V-5B-Diffusers
@@ -25,7 +26,7 @@ environment is not using a CPU-only PyTorch build and that the required
 pipeline can be imported:
 
 ```bash
-python -c "import torch; from diffusers import WanVideoToVideoPipeline; print(torch.__version__, torch.cuda.is_available())"
+python -c "import torch; from diffusers import WanImageToVideoPipeline; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 The final value must be `True`. If packages were replaced during installation,
@@ -52,10 +53,10 @@ python run_mask_tracking.py \
 ```
 
 The default `49` frames, `832*480`, and `30` sampling steps are selected for
-Kaggle GPUs. The pipeline uses sequential CPU offload and VAE tiling. This is
-slower than full GPU inference but substantially reduces peak VRAM use. The
-Wan VAE is loaded in `float32`, as required by the official Diffusers V2V
-example, while the transformer uses `bfloat16`.
+Kaggle GPUs. The implementation follows the official TI2V expanded-timestep
+path: encode the full source video, add scheduler noise, inject the first-frame
+condition through `prepare_latents`, then denoise. On dual T4, the transformer
+uses `cuda:0` and the VAE uses `cuda:1`.
 
 If the GPU still runs out of memory, restart the Kaggle session and run:
 
