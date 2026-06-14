@@ -3,7 +3,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from run_wan_ti2v import MODEL_ID, build_parser, generate, load_pipeline, validate_args
+from run_wan_ti2v import (
+    MODEL_ID,
+    build_parser,
+    generate,
+    load_pipeline,
+    prepare_balanced_vae_decode,
+    validate_args,
+)
 
 
 class FakeCuda:
@@ -18,6 +25,8 @@ class FakeCuda:
     @staticmethod
     def is_bf16_supported():
         return False
+
+    empty_cache = MagicMock()
 
 
 class FakeGenerator:
@@ -210,18 +219,42 @@ class WanDiffusersDemoTests(unittest.TestCase):
         latent.detach.return_value.cpu.return_value = "cpu latent"
         pipe = MagicMock(return_value=SimpleNamespace(frames=latent))
         decoder = MagicMock(return_value=[["generated video"]])
+        preparer = MagicMock()
 
         result = generate(
             args,
             pipe,
             torch_module=FakeTorch,
             balanced_decoder=decoder,
+            balanced_preparer=preparer,
         )
 
         self.assertEqual(result, ["generated video"])
         self.assertEqual(pipe.call_args.kwargs["output_type"], "latent")
         FakeTorch.save.assert_called_with(latent.detach().cpu(), Path("/tmp/balanced.latent.pt"))
+        preparer.assert_called_once_with(pipe, FakeTorch)
         decoder.assert_called_once_with(pipe, latent, FakeTorch)
+
+    def test_balanced_decode_releases_models_before_moving_vae(self):
+        pipe = SimpleNamespace(
+            vae=FakeVAE.from_pretrained(MODEL_ID),
+            text_encoder=object(),
+            transformer=object(),
+            transformer_2=None,
+            hf_device_map={"text_encoder": 0, "transformer": 1, "vae": 1},
+        )
+        gpu_parameter = FakeParameter("cuda:1")
+        pipe.vae.to.side_effect = lambda device: pipe.vae.parameters.configure_mock(
+            return_value=iter([gpu_parameter])
+        )
+
+        device = prepare_balanced_vae_decode(pipe, FakeTorch)
+
+        self.assertEqual(str(device), "cuda:1")
+        self.assertIsNone(pipe.text_encoder)
+        self.assertIsNone(pipe.transformer)
+        pipe.vae.to.assert_called_once_with("cuda:1")
+        FakeTorch.cuda.empty_cache.assert_called()
 
 
 if __name__ == "__main__":

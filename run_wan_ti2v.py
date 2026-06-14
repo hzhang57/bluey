@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,48 @@ def module_device(module: Any) -> Any:
     return next(module.parameters()).device
 
 
+def mapped_component_device(pipe: Any, component_name: str, fallback: Any) -> str:
+    mapped_device = getattr(pipe, "hf_device_map", {}).get(component_name, fallback)
+    if isinstance(mapped_device, int):
+        return f"cuda:{mapped_device}"
+    return str(mapped_device)
+
+
+def prepare_balanced_vae_decode(pipe: Any, torch_module: Any) -> Any:
+    current_device = module_device(pipe.vae)
+    target_device = mapped_component_device(pipe, "vae", current_device)
+    if str(current_device) == target_device:
+        return current_device
+
+    released = []
+    for component_name in ("text_encoder", "transformer", "transformer_2"):
+        if getattr(pipe, component_name, None) is not None:
+            setattr(pipe, component_name, None)
+            released.append(component_name)
+
+    print(
+        f"[decode] Released {', '.join(released) or 'no model components'}; "
+        f"moving VAE from {current_device} to {target_device}.",
+        flush=True,
+    )
+    gc.collect()
+    torch_module.cuda.empty_cache()
+
+    try:
+        pipe.vae.to(target_device)
+    except RuntimeError as error:
+        if "out of memory" not in str(error).lower():
+            raise
+        print(
+            f"[decode] VAE did not fit on {target_device}; falling back to CPU decode.",
+            flush=True,
+        )
+        pipe.vae.to("cpu")
+        gc.collect()
+        torch_module.cuda.empty_cache()
+    return module_device(pipe.vae)
+
+
 def load_pipeline(
     device_id: int,
     cpu_offload: bool,
@@ -165,8 +208,8 @@ def load_pipeline(
             print(f"[load] Device map: {pipe.hf_device_map}", flush=True)
         vae_device = module_device(pipe.vae)
         print(
-            f"[load] Actual VAE decode device={vae_device}; the VAE will stay "
-            f"there and final latents will be moved to it.",
+            f"[load] Initial VAE device={vae_device}; after denoising, unused "
+            f"models will be released before VAE placement for decode.",
             flush=True,
         )
     elif cpu_offload:
@@ -206,6 +249,7 @@ def generate(
     pipe: Any,
     torch_module: Any | None = None,
     balanced_decoder: Any | None = None,
+    balanced_preparer: Any | None = None,
 ) -> Any:
     if torch_module is None:
         import torch as torch_module
@@ -243,6 +287,8 @@ def generate(
     print(f"[decode] Saved denoised latent to {latent_path.resolve()}.", flush=True)
     if hasattr(torch_module.cuda, "empty_cache"):
         torch_module.cuda.empty_cache()
+    preparer = balanced_preparer or prepare_balanced_vae_decode
+    preparer(pipe, torch_module)
     decoder = balanced_decoder or decode_balanced_latents
     return decoder(pipe, latents, torch_module)[0]
 
