@@ -14,6 +14,7 @@ from mask_tracking.prompting import build_silhouette_prompt
 from mask_tracking.wan_sdedit import (
     MODEL_ID,
     _clear_vae_cache,
+    _conditioning_difference_statistics,
     _encode_prompt,
     _predict_with_cfg,
     _text_only_timestep,
@@ -35,6 +36,7 @@ class PromptTests(unittest.TestCase):
         prompt = build_silhouette_prompt("the red car")
         self.assertIn("the red car", prompt)
         self.assertIn("visible parts", prompt)
+        self.assertTrue(prompt.startswith("Completely cover"))
 
     def test_empty_object_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -343,6 +345,18 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertTrue(diagnostics["cfg_enabled"])
         self.assertEqual(diagnostics["transformer_forward_count"], 2)
         self.assertIsNotNone(diagnostics["unconditional"])
+        self.assertGreater(
+            diagnostics["conditional_minus_unconditional"]["relative_norm"], 0.0
+        )
+
+    def test_conditioning_difference_reports_identical_tensors(self):
+        import torch
+
+        values = torch.tensor([1.0, 2.0, 3.0])
+        diagnostics = _conditioning_difference_statistics(values, values)
+        self.assertEqual(diagnostics["norm"], 0.0)
+        self.assertEqual(diagnostics["relative_norm"], 0.0)
+        self.assertAlmostEqual(diagnostics["cosine_similarity"], 1.0, places=6)
 
     def test_guidance_one_runs_only_conditional_forward(self):
         import torch
@@ -406,6 +420,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(args.max_sequence_length, 128)
         self.assertEqual(args.mask_score_threshold, 0.20)
         self.assertEqual(args.negative_prompt, "")
+        self.assertIsNone(args.prompt)
         self.assertTrue(args.save_denoise_steps)
         self.assertEqual(args.denoise_save_every, 10)
 
@@ -420,6 +435,19 @@ class DiffusersWrapperTests(unittest.TestCase):
             ]
         )
         self.assertFalse(args.save_denoise_steps)
+
+    def test_cli_accepts_prompt_override(self):
+        args = build_parser().parse_args(
+            ["--video", "input.mp4", "--object", "car", "--prompt", "make it white"]
+        )
+        self.assertEqual(args.prompt, "make it white")
+
+    def test_cli_rejects_empty_prompt_override(self):
+        args = build_parser().parse_args(
+            ["--video", "input.mp4", "--object", "car", "--prompt", " "]
+        )
+        with self.assertRaisesRegex(ValueError, "--prompt"):
+            validate_args(args)
 
     def test_cli_validation_runs_before_model_loading(self):
         args = build_parser().parse_args(

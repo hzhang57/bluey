@@ -335,6 +335,32 @@ def _prediction_statistics(prediction: Any) -> dict[str, float]:
     }
 
 
+def _conditioning_difference_statistics(
+    conditional: Any, unconditional: Any
+) -> dict[str, float]:
+    cond = conditional.float()
+    uncond = unconditional.float()
+    difference = cond - uncond
+    cond_norm = float(cond.norm().item())
+    uncond_norm = float(uncond.norm().item())
+    difference_norm = float(difference.norm().item())
+    denominator = max(cond_norm, uncond_norm, 1e-12)
+    cosine = float(
+        torch_cosine_similarity(cond.flatten(), uncond.flatten()).item()
+    )
+    return {
+        **_prediction_statistics(difference),
+        "relative_norm": difference_norm / denominator,
+        "cosine_similarity": cosine,
+    }
+
+
+def torch_cosine_similarity(left: Any, right: Any) -> Any:
+    import torch
+
+    return torch.nn.functional.cosine_similarity(left, right, dim=0, eps=1e-12)
+
+
 def _predict_with_cfg(
     pipe: Any,
     latents: Any,
@@ -368,6 +394,11 @@ def _predict_with_cfg(
         guided = unconditional + guide_scale * (conditional - unconditional)
         forward_count = 2
 
+    conditioning_difference = (
+        _conditioning_difference_statistics(conditional, unconditional)
+        if unconditional is not None
+        else None
+    )
     diagnostics = {
         "cfg_enabled": unconditional is not None,
         "transformer_forward_count": forward_count,
@@ -375,6 +406,7 @@ def _predict_with_cfg(
         "unconditional": (
             _prediction_statistics(unconditional) if unconditional is not None else None
         ),
+        "conditional_minus_unconditional": conditioning_difference,
         "guided": _prediction_statistics(guided),
     }
     return guided, diagnostics
@@ -433,6 +465,11 @@ class WanFullVideoSDEdit:
             transformer_dtype,
             max_sequence_length,
         )
+        embedding_difference = (
+            _conditioning_difference_statistics(prompt_embeds, negative_embeds)
+            if negative_embeds is not None
+            else None
+        )
         text_encoder = pipe.text_encoder
         pipe.text_encoder = None
         del text_encoder
@@ -445,6 +482,13 @@ class WanFullVideoSDEdit:
             f"negative_prompt={negative_prompt!r}",
             flush=True,
         )
+        if embedding_difference is not None:
+            print(
+                "[cfg] text embedding difference: "
+                f"relative_norm={embedding_difference['relative_norm']:.6f} "
+                f"cosine_similarity={embedding_difference['cosine_similarity']:.6f}",
+                flush=True,
+            )
 
         vae_device = getattr(pipe, "_vae_target_device", transformer_device)
         pipe.vae.to(vae_device, dtype=torch.float16)
@@ -573,11 +617,42 @@ class WanFullVideoSDEdit:
                     if uncond_stats is not None
                     else ""
                 )
+                difference = cfg_diagnostics["conditional_minus_unconditional"]
+                difference_text = (
+                    f" text_delta_relative_norm={difference['relative_norm']:.6f}"
+                    if difference is not None
+                    else ""
+                )
                 print(
                     f"[stage 4/5] Denoise {index + 1}/{len(timesteps)} "
                     f"forwards={cfg_diagnostics['transformer_forward_count']} "
                     f"cond_std={cond_stats['std']:.4f}{uncond_text} "
-                    f"guided_std={guided_stats['std']:.4f}",
+                    f"guided_std={guided_stats['std']:.4f}{difference_text}",
+                    flush=True,
+                )
+
+        cfg_difference_summary = None
+        if cfg_enabled:
+            relative_norms = [
+                step["conditional_minus_unconditional"]["relative_norm"]
+                for step in cfg_step_diagnostics
+            ]
+            cfg_difference_summary = {
+                "relative_norm_min": min(relative_norms),
+                "relative_norm_max": max(relative_norms),
+                "relative_norm_mean": sum(relative_norms) / len(relative_norms),
+            }
+            print(
+                "[cfg] conditional-minus-unconditional summary: "
+                f"relative_norm_mean={cfg_difference_summary['relative_norm_mean']:.6f} "
+                f"min={cfg_difference_summary['relative_norm_min']:.6f} "
+                f"max={cfg_difference_summary['relative_norm_max']:.6f}",
+                flush=True,
+            )
+            if cfg_difference_summary["relative_norm_mean"] < 1e-4:
+                print(
+                    "[cfg] WARNING: text conditioning barely changes the Transformer "
+                    "prediction. Check the prompt embeddings and checkpoint.",
                     flush=True,
                 )
 
@@ -607,6 +682,8 @@ class WanFullVideoSDEdit:
                     "positive_prompt": prompt,
                     "negative_prompt": negative_prompt,
                     "transformer_forwards_per_step": 2 if cfg_enabled else 1,
+                    "embedding_difference": embedding_difference,
+                    "prediction_difference_summary": cfg_difference_summary,
                     "total_transformer_forwards": (
                         len(timesteps) * (2 if cfg_enabled else 1)
                     ),

@@ -14,6 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--video", required=True)
     parser.add_argument("--object", required=True, dest="object_text")
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Override the generated object-edit prompt for counterfactual tests.",
+    )
     parser.add_argument("--output-dir", default="outputs/mask_tracking")
     parser.add_argument("--strength", type=float, default=0.45)
     parser.add_argument("--seed", type=int, default=42)
@@ -77,6 +82,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--mask-score-threshold must be in [0, 1]")
     if args.morphology_kernel < 1:
         raise ValueError("--morphology-kernel must be positive")
+    if args.prompt is not None and not args.prompt.strip():
+        raise ValueError("--prompt must contain non-whitespace text")
 
 
 def main() -> None:
@@ -112,7 +119,11 @@ def main() -> None:
         args.start_frame,
         target_fps=args.fps,
     )
-    prompt = build_silhouette_prompt(args.object_text)
+    prompt = (
+        args.prompt.strip()
+        if args.prompt is not None
+        else build_silhouette_prompt(args.object_text)
+    )
     pipeline = WanFullVideoSDEdit()
     fps = args.fps or source_fps
     snapshot_records = []

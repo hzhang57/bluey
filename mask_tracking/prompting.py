@@ -1,8 +1,8 @@
-PROMPT_TEMPLATE = """Paint only {object_text} solid pure white.
-Keep every background pixel and every other object unchanged.
-Do not replace the scene with a silhouette, mask image, black background, or blank frame.
-Preserve the original motion, camera movement, timing, and occlusions.
-Only paint the visible parts of {object_text}, and keep the white paint attached to the same object."""
+PROMPT_TEMPLATE = """Completely cover {object_text} with solid bright white paint in every frame.
+The visible parts of {object_text} must be pure white, with no original color or texture remaining.
+Keep the white paint attached to the same object through motion and occlusion.
+Keep the scene, camera motion, and all non-target objects unchanged.
+Do not produce a mask-only image, black background, or blank frame."""
 
 
 def build_silhouette_prompt(object_text: str) -> str:

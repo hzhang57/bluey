@@ -75,6 +75,25 @@ manifest records prompts, guidance scale, forward counts, and per-step
 conditional/unconditional/guided prediction statistics under
 `diagnostics.text_cfg`.
 
+The denoise log also reports `text_delta_relative_norm`, the relative size of
+the conditional-minus-unconditional prediction. A nonzero value proves that
+the prompt changes the Transformer prediction at that step. If it is nonzero
+but the decoded video remains close to the source, the source-video SDEdit
+prior is dominating; compare stronger runs such as `--strength 0.60` or
+`--strength 0.75` and `--guide-scale 7.5`. The manifest records the positive
+versus negative embedding difference and every per-step prediction difference.
+
+For a direct prompt counterfactual, bypass the generated object template:
+
+```bash
+python run_mask_tracking.py \
+  --video input.mp4 \
+  --object "the red car" \
+  --prompt "Replace the red car with a featureless solid pure white car." \
+  --strength 0.75 \
+  --guide-scale 7.5
+```
+
 If the GPU still runs out of memory, restart the Kaggle session and run:
 
 ```bash
