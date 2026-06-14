@@ -1,24 +1,30 @@
 # Mask Tracking as an Emergent Capability of Wan2.2
 
 This experiment probes whether a frozen video editing model can keep a local
-white silhouette edit attached to a text-specified object over time. It uses
-Diffusers `WanPipeline` with full-video latent SDEdit and the fixed model:
+white silhouette edit attached to a text-specified object over time. The
+original mask-tracking entry point uses Diffusers `WanPipeline` with full-video
+latent SDEdit and the fixed model:
 
 ```text
 Wan-AI/Wan2.2-TI2V-5B-Diffusers
 ```
 
-No detector, segmentation model, optical flow, tracker, or Wan2.2 GitHub clone
-is used.
+The grayscale color-control prerequisite below instead uses the official
+Wan2.2 GitHub implementation. Neither path uses a detector, segmentation
+model, optical flow, or tracker.
 
 ## Global Color-Control Prerequisite
 
 Before testing object-level painting, use the grayscale colorization demo to
-check whether the model accepts a simpler global color instruction:
+check whether the model accepts a simpler global color instruction. This demo
+uses the official `Wan-Video/Wan2.2` GitHub implementation and official
+non-Diffusers `Wan-AI/Wan2.2-TI2V-5B` checkpoint:
 
 ```bash
 python run_gray_colorizing.py \
   --video input.mp4 \
+  --wan-repo /kaggle/working/Wan2.2 \
+  --wan-checkpoint /kaggle/working/Wan2.2-TI2V-5B \
   --color magenta \
   --strength 0.60 \
   --guide-scale 5.0 \
@@ -36,11 +42,14 @@ The grayscale demo outputs 20 frames by default because a 49-frame
 self-attention forward exceeds a 15 GiB T4. Wan's temporal VAE requires
 `4n+1` model-input frames, so the demo internally repeats the final frame once
 to run 21 frames and trims every saved output and metric back to the requested
-20 frames. The loader also repairs a Transformers
-compatibility issue where the official UMT5 checkpoint stores `shared.weight`
-but some versions create a separate missing `encoder.embed_tokens.weight`.
-The run stops before denoising if positive and empty prompt embeddings are
-identical or zero.
+20 frames. It uses the official Wan T5 `.pth` checkpoint, official Wan2.2 VAE,
+official DiT, and official FlowUniPC scheduler. The only added behavior is
+full-video latent SDEdit because upstream `WanTI2V.generate()` accepts pure
+noise or a first-frame image, not a complete source video. Text encoding uses
+the official 512-token default; `--max-sequence-length 128` remains available
+as an explicitly less faithful but faster CPU-T5 diagnostic. A minimal import
+shim avoids loading unrelated official Animate/S2V modules and their optional
+dependencies; inference components themselves come directly from the checkout.
 
 The outputs include the original color reference, actual grayscale model
 input, raw generation, target-color score and mask videos, denoise diagnostics,
@@ -57,27 +66,29 @@ On a Kaggle CUDA notebook:
 ```bash
 %cd /kaggle/working/bluey
 !pip install --no-deps -r requirements-kaggle.txt
+!pip install flash-attn --no-build-isolation --no-deps
+!git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git /kaggle/working/Wan2.2
+!huggingface-cli download Wan-AI/Wan2.2-TI2V-5B \
+  --local-dir /kaggle/working/Wan2.2-TI2V-5B
 ```
 
-Restart the Kaggle runtime after installation so the pinned
-`transformers==4.57.3` is used. Transformers 5.x can load the official UMT5
-checkpoint with a missing token-embedding alias, producing identical zero
-embeddings for positive and empty prompts.
+Restart the Kaggle runtime after installation. The project pins the
+Transformers range required by the official Wan2.2 repository.
 
 Before running, set **Notebook options > Accelerator > GPU**. Verify that the
-environment is not using a CPU-only PyTorch build and that the required
-pipeline can be imported:
+environment is not using a CPU-only PyTorch build and that the official Wan
+checkout can be imported:
 
 ```bash
-python -c "import torch; from diffusers import WanPipeline; print(torch.__version__, torch.cuda.is_available())"
+python -c "import sys, torch, flash_attn; sys.path.insert(0, '/kaggle/working/Wan2.2'); import wan; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 The final value must be `True`. If packages were replaced during installation,
 restart the Kaggle session before inference.
 
-The first run downloads the fixed Diffusers model from Hugging Face.
-Setting an optional `HF_TOKEN` increases download rate limits. Diffusers Flax
-deprecation warnings are unrelated to this PyTorch pipeline and can be ignored.
+The official checkpoint is distinct from
+`Wan-AI/Wan2.2-TI2V-5B-Diffusers`. Setting an optional `HF_TOKEN` increases
+download rate limits.
 
 Warnings about Kaggle's unused RAPIDS packages such as `dask-cuda`, `cudf`,
 `cuml`, `numba-cuda`, or `cuda-core` do not affect this experiment. Starting a

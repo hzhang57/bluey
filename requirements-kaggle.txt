@@ -1,9 +1,18 @@
 # Keep Kaggle's torch/CUDA stack, but pin the Wan-compatible text stack:
+# Install flash-attn separately with --no-build-isolation after this file.
 diffusers==0.38.0
-transformers==4.57.3
+transformers>=4.49.0,<=4.51.3
 huggingface-hub>=0.34.0,<1.0
-tokenizers>=0.22.0,<=0.23.0
+tokenizers>=0.21.0,<0.22
 safetensors>=0.8.0
+accelerate>=1.1.1
 sentencepiece
 ftfy
 imageio[ffmpeg]>=2.34.0
+imageio-ffmpeg
+numpy>=1.23.5,<2
+opencv-python-headless>=4.9.0.80,<4.12
+easydict
+tqdm
+regex
+einops

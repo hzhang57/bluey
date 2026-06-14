@@ -71,9 +71,12 @@ class GrayColorCliTests(unittest.TestCase):
         self.assertEqual(args.strength, 0.60)
         self.assertEqual(args.frame_num, 20)
         self.assertEqual(args.guide_scale, 5.0)
+        self.assertEqual(args.max_sequence_length, 512)
         self.assertEqual(args.saturation_threshold, 0.20)
         self.assertEqual(args.hue_tolerance_degrees, 30.0)
         self.assertEqual(args.minimum_luma, 0.05)
+        self.assertEqual(args.wan_repo, "/kaggle/working/Wan2.2")
+        self.assertEqual(args.wan_checkpoint, "/kaggle/working/Wan2.2-TI2V-5B")
 
     def test_prompt_override_and_color_are_independent(self):
         args = build_parser().parse_args(
@@ -87,6 +90,13 @@ class GrayColorCliTests(unittest.TestCase):
             ["--video", "input.mp4", "--saturation-threshold", "2"]
         )
         with self.assertRaisesRegex(ValueError, "--saturation-threshold"):
+            validate_args(args)
+
+    def test_rejects_text_length_above_official_limit(self):
+        args = build_parser().parse_args(
+            ["--video", "input.mp4", "--max-sequence-length", "513"]
+        )
+        with self.assertRaisesRegex(ValueError, "--max-sequence-length"):
             validate_args(args)
 
     def test_twenty_frames_are_padded_to_twenty_one_for_wan(self):
@@ -146,11 +156,11 @@ class GrayColorCliTests(unittest.TestCase):
         ), patch.dict(
             sys.modules, {"mask_tracking.video_io": fake_video_io}
         ), patch(
-            "mask_tracking.wan_sdedit.WanFullVideoSDEdit",
+            "mask_tracking.wan_official_sdedit.WanOfficialFullVideoSDEdit",
             return_value=fake_pipeline,
         ), patch(
-            "mask_tracking.wan_sdedit.diffusers_version",
-            return_value="test",
+            "mask_tracking.wan_official_sdedit.official_environment",
+            return_value={"torch": "test", "transformers": "test", "diffusers": "test"},
         ):
             main()
             manifest = json.loads((Path(directory) / "manifest.json").read_text())

@@ -15,6 +15,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Probe global text-driven color control from a grayscale video."
     )
     parser.add_argument("--video", required=True)
+    parser.add_argument("--wan-repo", default="/kaggle/working/Wan2.2")
+    parser.add_argument(
+        "--wan-checkpoint", default="/kaggle/working/Wan2.2-TI2V-5B"
+    )
     parser.add_argument("--color", choices=tuple(TARGET_COLORS), default="magenta")
     parser.add_argument(
         "--prompt",
@@ -40,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling-steps", type=int, default=100)
     parser.add_argument("--guide-scale", type=float, default=5.0)
     parser.add_argument("--negative-prompt", default="")
-    parser.add_argument("--max-sequence-length", type=int, default=128)
+    parser.add_argument("--max-sequence-length", type=int, default=512)
     parser.add_argument("--saturation-threshold", type=float, default=0.20)
     parser.add_argument("--hue-tolerance-degrees", type=float, default=30.0)
     parser.add_argument("--minimum-luma", type=float, default=0.05)
@@ -66,8 +70,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--sampling-steps must be positive")
     if args.guide_scale <= 0.0:
         raise ValueError("--guide-scale must be positive")
-    if args.max_sequence_length < 1:
-        raise ValueError("--max-sequence-length must be positive")
+    if not 1 <= args.max_sequence_length <= 512:
+        raise ValueError("--max-sequence-length must be in [1, 512]")
     if args.frame_num < 1:
         raise ValueError("--frame-num must be positive")
     if args.start_frame < 0:
@@ -120,7 +124,11 @@ def main() -> None:
         score_to_rgb,
         write_video,
     )
-    from mask_tracking.wan_sdedit import MODEL_ID, WanFullVideoSDEdit, diffusers_version
+    from mask_tracking.wan_official_sdedit import (
+        MODEL_ID,
+        WanOfficialFullVideoSDEdit,
+        official_environment,
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +148,11 @@ def main() -> None:
         if args.prompt is not None
         else build_global_color_prompt(args.color)
     )
-    pipeline = WanFullVideoSDEdit()
+    pipeline = WanOfficialFullVideoSDEdit(
+        args.wan_repo,
+        args.wan_checkpoint,
+        max_sequence_length=args.max_sequence_length,
+    )
     fps = args.fps or source_fps
     snapshot_records = []
 
@@ -250,7 +262,7 @@ def main() -> None:
         },
         "environment": {
             "python": platform.python_version(),
-            "diffusers": diffusers_version(),
+            **official_environment(),
         },
     }
     (output_dir / "manifest.json").write_text(
