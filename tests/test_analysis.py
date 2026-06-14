@@ -16,6 +16,7 @@ from mask_tracking.wan_sdedit import (
     _clear_vae_cache,
     _conditioning_difference_statistics,
     _encode_prompt,
+    _ensure_finite_tensor,
     _predict_with_cfg,
     _text_only_timestep,
     add_noise_at_timestep,
@@ -336,6 +337,7 @@ class DiffusersWrapperTests(unittest.TestCase):
         )
         expected = unconditional + 5.0 * (conditional - unconditional)
         self.assertTrue(torch.equal(guided, expected))
+        self.assertEqual(guided.dtype, torch.float32)
         self.assertIs(transformer.calls[0]["encoder_hidden_states"], conditional)
         self.assertIs(transformer.calls[1]["encoder_hidden_states"], unconditional)
         self.assertEqual(
@@ -357,6 +359,41 @@ class DiffusersWrapperTests(unittest.TestCase):
         self.assertEqual(diagnostics["norm"], 0.0)
         self.assertEqual(diagnostics["relative_norm"], 0.0)
         self.assertAlmostEqual(diagnostics["cosine_similarity"], 1.0, places=6)
+
+    def test_nonfinite_tensor_reports_exact_stage(self):
+        import torch
+
+        with self.assertRaisesRegex(
+            RuntimeError, "conditional Transformer prediction contains 1/2"
+        ):
+            _ensure_finite_tensor(
+                torch.tensor([1.0, float("nan")]),
+                "conditional Transformer prediction",
+                torch,
+            )
+
+    def test_cfg_is_combined_in_float32(self):
+        import torch
+
+        class Transformer:
+            dtype = torch.float16
+
+            def __call__(self, **kwargs):
+                return (kwargs["encoder_hidden_states"].clone(),)
+
+        conditional = torch.tensor([2.0], dtype=torch.float16)
+        unconditional = torch.tensor([1.0], dtype=torch.float16)
+        guided, _ = _predict_with_cfg(
+            SimpleNamespace(transformer=Transformer()),
+            torch.zeros(1, dtype=torch.float32),
+            torch.tensor([1.0]),
+            conditional,
+            unconditional,
+            5.0,
+            torch,
+        )
+        self.assertEqual(guided.dtype, torch.float32)
+        self.assertEqual(guided.item(), 6.0)
 
     def test_guidance_one_runs_only_conditional_forward(self):
         import torch

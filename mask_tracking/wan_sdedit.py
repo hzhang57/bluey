@@ -253,7 +253,6 @@ def _encode_video(
     pipe: Any,
     source_video: np.ndarray,
     transformer_device: Any,
-    transformer_dtype: Any,
     torch_module: Any,
 ) -> Any:
     vae_device = next(pipe.vae.parameters()).device
@@ -273,7 +272,9 @@ def _encode_video(
     finally:
         _clear_vae_cache(pipe)
     mean, std = _vae_norm(pipe, latent.device, torch_module)
-    latent = ((latent.float() - mean) * std).to(transformer_device, transformer_dtype)
+    latent = ((latent.float() - mean) * std).to(
+        device=transformer_device, dtype=torch_module.float32
+    )
     del tensor
     _clear_memory(torch_module)
     return latent
@@ -328,11 +329,24 @@ def _prediction_statistics(prediction: Any) -> dict[str, float]:
     values = prediction.float()
     return {
         "mean": float(values.mean().item()),
-        "std": float(values.std().item()),
+        "std": float(values.std(unbiased=False).item()),
         "min": float(values.min().item()),
         "max": float(values.max().item()),
         "norm": float(values.norm().item()),
     }
+
+
+def _ensure_finite_tensor(tensor: Any, stage: str, torch_module: Any) -> None:
+    finite = torch_module.isfinite(tensor)
+    if bool(finite.all().item()):
+        return
+    nonfinite_count = int((~finite).sum().item())
+    total_count = int(tensor.numel())
+    raise RuntimeError(
+        f"{stage} contains {nonfinite_count}/{total_count} non-finite values. "
+        "Denoising has numerically diverged; lower --guide-scale and inspect the "
+        "reported stage."
+    )
 
 
 def _conditioning_difference_statistics(
@@ -372,6 +386,7 @@ def _predict_with_cfg(
 ) -> tuple[Any, dict[str, Any]]:
     transformer_dtype = pipe.transformer.dtype
     hidden_states = latents.to(transformer_dtype)
+    _ensure_finite_tensor(hidden_states, "transformer input", torch_module)
     with torch_module.no_grad(), _model_cache_context(pipe.transformer, "cond"):
         conditional = pipe.transformer(
             hidden_states=hidden_states,
@@ -379,9 +394,10 @@ def _predict_with_cfg(
             encoder_hidden_states=prompt_embeds,
             return_dict=False,
         )[0]
+    _ensure_finite_tensor(conditional, "conditional Transformer prediction", torch_module)
 
     unconditional = None
-    guided = conditional
+    guided = conditional.float()
     forward_count = 1
     if negative_embeds is not None:
         with torch_module.no_grad(), _model_cache_context(pipe.transformer, "uncond"):
@@ -391,8 +407,16 @@ def _predict_with_cfg(
                 encoder_hidden_states=negative_embeds,
                 return_dict=False,
             )[0]
-        guided = unconditional + guide_scale * (conditional - unconditional)
+        _ensure_finite_tensor(
+            unconditional, "unconditional Transformer prediction", torch_module
+        )
+        # Keep CFG arithmetic and the scheduler state in FP32. UniPC multistep
+        # updates can accumulate low-precision error until they abruptly diverge.
+        conditional_f = conditional.float()
+        unconditional_f = unconditional.float()
+        guided = unconditional_f + guide_scale * (conditional_f - unconditional_f)
         forward_count = 2
+    _ensure_finite_tensor(guided, "guided CFG prediction", torch_module)
 
     conditioning_difference = (
         _conditioning_difference_statistics(conditional, unconditional)
@@ -465,6 +489,9 @@ class WanFullVideoSDEdit:
             transformer_dtype,
             max_sequence_length,
         )
+        _ensure_finite_tensor(prompt_embeds, "positive prompt embedding", torch)
+        if negative_embeds is not None:
+            _ensure_finite_tensor(negative_embeds, "negative prompt embedding", torch)
         embedding_difference = (
             _conditioning_difference_statistics(prompt_embeds, negative_embeds)
             if negative_embeds is not None
@@ -497,7 +524,8 @@ class WanFullVideoSDEdit:
             f"{frames} frames at {width}x{height}...",
             flush=True,
         )
-        clean = _encode_video(pipe, source_video, transformer_device, transformer_dtype, torch)
+        clean = _encode_video(pipe, source_video, transformer_device, torch)
+        _ensure_finite_tensor(clean, "encoded source latent", torch)
         latent_contract = validate_text_only_latent_contract(pipe.transformer, clean)
         print(f"[stage 2/5] Source latent shape={tuple(clean.shape)}", flush=True)
         print("[stage 2/5] Decoding VAE round-trip diagnostic...", flush=True)
@@ -532,6 +560,8 @@ class WanFullVideoSDEdit:
         torch.manual_seed(seed)
         noise = torch.randn_like(clean)
         latents = add_noise_at_timestep(pipe.scheduler, clean, noise, timesteps[0])
+        latents = latents.float()
+        _ensure_finite_tensor(latents, "scheduler-noised source latent", torch)
         add_noise_verification = verify_scheduler_add_noise(
             clean, noise, latents, noise_diagnostics
         )
@@ -584,6 +614,10 @@ class WanFullVideoSDEdit:
                 }
             )
             latents = pipe.scheduler.step(prediction, timestep, latents, return_dict=False)[0]
+            latents = latents.float()
+            _ensure_finite_tensor(
+                latents, f"scheduler output after denoise step {index + 1}", torch
+            )
             step_number = index + 1
             should_save_snapshot = (
                 snapshot_callback is not None

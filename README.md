@@ -82,6 +82,11 @@ but the decoded video remains close to the source, the source-video SDEdit
 prior is dominating; compare stronger runs such as `--strength 0.60` or
 `--strength 0.75` and `--guide-scale 7.5`. The manifest records the positive
 versus negative embedding difference and every per-step prediction difference.
+Transformer forwards use the checkpoint's low-precision dtype, while CFG
+arithmetic and the UniPC scheduler latent remain FP32 to prevent multistep
+numerical divergence. The run stops immediately with the exact failing stage
+if a conditional prediction, unconditional prediction, guided prediction, or
+scheduler output first contains NaN or infinity.
 
 For a direct prompt counterfactual, bypass the generated object template:
 
