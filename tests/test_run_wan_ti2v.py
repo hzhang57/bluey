@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from run_wan_ti2v import (
     MODEL_ID,
     build_parser,
+    decode_with_cpu_fallback,
     generate,
     load_pipeline,
     prepare_balanced_vae_decode,
@@ -126,6 +127,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertEqual(args.num_inference_steps, 50)
         self.assertEqual(args.guidance_scale, 5.0)
         self.assertEqual(args.dtype, "auto")
+        self.assertEqual(args.vae_tile_size, 128)
         self.assertFalse(args.cpu_offload)
         self.assertFalse(args.balanced_device_map)
 
@@ -179,7 +181,12 @@ class WanDiffusersDemoTests(unittest.TestCase):
         )
         pipe.enable_model_cpu_offload.assert_called_once_with(gpu_id=1)
         pipe.to.assert_not_called()
-        pipe.vae.enable_tiling.assert_called_once_with()
+        pipe.vae.enable_tiling.assert_called_once_with(
+            tile_sample_min_height=128,
+            tile_sample_min_width=128,
+            tile_sample_stride_height=96,
+            tile_sample_stride_width=96,
+        )
 
     def test_balanced_device_map_does_not_move_vae(self):
         pipe = load_pipeline(
@@ -233,7 +240,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertEqual(pipe.call_args.kwargs["output_type"], "latent")
         FakeTorch.save.assert_called_with(latent.detach().cpu(), Path("/tmp/balanced.latent.pt"))
         preparer.assert_called_once_with(pipe, FakeTorch)
-        decoder.assert_called_once_with(pipe, latent, FakeTorch)
+        decoder.assert_called_once_with(pipe, "cpu latent", FakeTorch)
 
     def test_balanced_decode_releases_models_before_moving_vae(self):
         pipe = SimpleNamespace(
@@ -255,6 +262,27 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertIsNone(pipe.transformer)
         pipe.vae.to.assert_called_once_with("cuda:1")
         FakeTorch.cuda.empty_cache.assert_called()
+
+    def test_gpu_decode_oom_retries_on_cpu(self):
+        pipe = SimpleNamespace(vae=FakeVAE.from_pretrained(MODEL_ID))
+        pipe.vae.parameters = MagicMock(
+            side_effect=[
+                iter([FakeParameter("cuda:1")]),
+                iter([FakeParameter("cpu")]),
+            ]
+        )
+        pipe.vae.clear_cache = MagicMock()
+        latents = MagicMock()
+        decoder = MagicMock(
+            side_effect=[RuntimeError("CUDA out of memory"), [["frames"]]]
+        )
+
+        result = decode_with_cpu_fallback(pipe, latents, FakeTorch, decoder)
+
+        self.assertEqual(result, [["frames"]])
+        pipe.vae.to.assert_called_once_with("cpu")
+        pipe.vae.clear_cache.assert_called_once_with()
+        decoder.assert_called_with(pipe, latents.detach().cpu(), FakeTorch)
 
 
 if __name__ == "__main__":

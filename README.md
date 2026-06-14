@@ -79,6 +79,7 @@ use the experimental balanced device map:
 python run_wan_ti2v.py \
   --balanced-device-map \
   --vae-tiling \
+  --vae-tile-size 128 \
   --dtype float16 \
   --num-frames 21 \
   --height 480 \
@@ -91,7 +92,23 @@ single Transformer forward run in parallel. The balanced path finishes
 denoising first, saves `<output>.latent.pt`, and moves the much smaller latent
 to the VAE for decoding. After denoising, it releases the text encoder and
 transformer, then moves a CPU-resident VAE to its mapped GPU. If the VAE still
-does not fit, decoding automatically falls back to CPU.
+does not fit, or the GPU runs out of memory during decode, decoding
+automatically falls back to CPU. The default 128-pixel VAE tile uses less peak
+memory than the Diffusers default.
+
+If denoising already completed and `<output>.latent.pt` exists, decode it
+without rerunning the 50 denoise steps or loading the full pipeline:
+
+```bash
+python decode_wan_latent.py \
+  --latent /kaggle/working/5bit2v_output.latent.pt \
+  --output /kaggle/working/5bit2v_output.mp4 \
+  --device cuda:0 \
+  --vae-tile-size 128
+```
+
+If GPU decode still exceeds 15 GiB, the decode-only script automatically
+retries on CPU.
 
 Wan requires `num_frames` to have the form `4n+1`, such as 21, 81, or 121.
 The model is downloaded to the Hugging Face cache automatically.

@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable VAE tiling to reduce peak decode memory.",
     )
+    parser.add_argument(
+        "--vae-tile-size",
+        type=int,
+        default=128,
+        help="Spatial VAE tile size used with --vae-tiling. Smaller uses less memory.",
+    )
     return parser
 
 
@@ -77,6 +83,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--fps must be positive")
     if args.device_id < 0:
         raise ValueError("--device-id must be non-negative")
+    if args.vae_tile_size < 64 or args.vae_tile_size % 8:
+        raise ValueError("--vae-tile-size must be at least 64 and divisible by 8")
     if not args.prompt.strip():
         raise ValueError("--prompt must not be empty")
 
@@ -102,6 +110,26 @@ def mapped_component_device(pipe: Any, component_name: str, fallback: Any) -> st
     return str(mapped_device)
 
 
+def configure_vae_tiling(vae: Any, enabled: bool, tile_size: int) -> None:
+    if not enabled or not hasattr(vae, "enable_tiling"):
+        return
+    stride = tile_size * 3 // 4
+    print(
+        f"[load] Enabling VAE tiling with tile={tile_size}, stride={stride}.",
+        flush=True,
+    )
+    vae.enable_tiling(
+        tile_sample_min_height=tile_size,
+        tile_sample_min_width=tile_size,
+        tile_sample_stride_height=stride,
+        tile_sample_stride_width=stride,
+    )
+
+
+def is_out_of_memory(error: BaseException) -> bool:
+    return "out of memory" in str(error).lower()
+
+
 def prepare_balanced_vae_decode(pipe: Any, torch_module: Any) -> Any:
     current_device = module_device(pipe.vae)
     target_device = mapped_component_device(pipe, "vae", current_device)
@@ -125,7 +153,7 @@ def prepare_balanced_vae_decode(pipe: Any, torch_module: Any) -> Any:
     try:
         pipe.vae.to(target_device)
     except RuntimeError as error:
-        if "out of memory" not in str(error).lower():
+        if not is_out_of_memory(error):
             raise
         print(
             f"[decode] VAE did not fit on {target_device}; falling back to CPU decode.",
@@ -141,6 +169,7 @@ def load_pipeline(
     device_id: int,
     cpu_offload: bool,
     vae_tiling: bool,
+    vae_tile_size: int = 128,
     dtype_name: str = "auto",
     balanced_device_map: bool = False,
     torch_module: Any | None = None,
@@ -197,8 +226,7 @@ def load_pipeline(
         pipeline_kwargs["device_map"] = "balanced"
     pipe = pipeline_class.from_pretrained(MODEL_ID, **pipeline_kwargs)
 
-    if vae_tiling and hasattr(pipe.vae, "enable_tiling"):
-        pipe.vae.enable_tiling()
+    configure_vae_tiling(pipe.vae, vae_tiling, vae_tile_size)
     if balanced_device_map:
         print(
             "[load] Using balanced device placement across available GPUs.",
@@ -244,6 +272,31 @@ def decode_balanced_latents(pipe: Any, latents: Any, torch_module: Any) -> Any:
     return pipe.video_processor.postprocess_video(video, output_type="np")
 
 
+def decode_with_cpu_fallback(
+    pipe: Any,
+    latents: Any,
+    torch_module: Any,
+    decoder: Any = decode_balanced_latents,
+) -> Any:
+    try:
+        return decoder(pipe, latents, torch_module)
+    except RuntimeError as error:
+        if not is_out_of_memory(error) or str(module_device(pipe.vae)) == "cpu":
+            raise
+        print(
+            "[decode] GPU VAE decode ran out of memory; retrying from the saved "
+            "CPU latent with CPU VAE decode.",
+            flush=True,
+        )
+
+    pipe.vae.to("cpu")
+    if hasattr(pipe.vae, "clear_cache"):
+        pipe.vae.clear_cache()
+    gc.collect()
+    torch_module.cuda.empty_cache()
+    return decoder(pipe, latents.detach().cpu(), torch_module)
+
+
 def generate(
     args: argparse.Namespace,
     pipe: Any,
@@ -281,16 +334,19 @@ def generate(
         return pipe(**pipeline_kwargs).frames[0]
 
     latents = pipe(**pipeline_kwargs, output_type="latent").frames
+    cpu_latents = latents.detach().cpu()
     latent_path = Path(args.output).with_suffix(".latent.pt")
     latent_path.parent.mkdir(parents=True, exist_ok=True)
-    torch_module.save(latents.detach().cpu(), latent_path)
+    torch_module.save(cpu_latents, latent_path)
     print(f"[decode] Saved denoised latent to {latent_path.resolve()}.", flush=True)
+    del latents
+    gc.collect()
     if hasattr(torch_module.cuda, "empty_cache"):
         torch_module.cuda.empty_cache()
     preparer = balanced_preparer or prepare_balanced_vae_decode
     preparer(pipe, torch_module)
     decoder = balanced_decoder or decode_balanced_latents
-    return decoder(pipe, latents, torch_module)[0]
+    return decode_with_cpu_fallback(pipe, cpu_latents, torch_module, decoder)[0]
 
 
 def main() -> None:
@@ -303,6 +359,7 @@ def main() -> None:
         device_id=args.device_id,
         cpu_offload=args.cpu_offload,
         vae_tiling=args.vae_tiling,
+        vae_tile_size=args.vae_tile_size,
         dtype_name=args.dtype,
         balanced_device_map=args.balanced_device_map,
     )
