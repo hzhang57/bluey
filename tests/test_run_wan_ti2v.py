@@ -15,6 +15,10 @@ class FakeCuda:
     def device_count():
         return 2
 
+    @staticmethod
+    def is_bf16_supported():
+        return False
+
 
 class FakeGenerator:
     def __init__(self, device):
@@ -29,6 +33,7 @@ class FakeGenerator:
 class FakeTorch:
     cuda = FakeCuda()
     float32 = "float32"
+    float16 = "float16"
     bfloat16 = "bfloat16"
     Generator = FakeGenerator
 
@@ -87,7 +92,9 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertEqual(args.num_frames, 121)
         self.assertEqual(args.num_inference_steps, 50)
         self.assertEqual(args.guidance_scale, 5.0)
+        self.assertEqual(args.dtype, "auto")
         self.assertFalse(args.cpu_offload)
+        self.assertFalse(args.balanced_device_map)
 
     def test_rejects_invalid_frame_count(self):
         args = build_parser().parse_args(["--num-frames", "20"])
@@ -99,7 +106,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "divisible by 32"):
             validate_args(args)
 
-    def test_loads_fp32_vae_and_bf16_pipeline(self):
+    def test_auto_uses_fp16_when_bf16_is_unsupported(self):
         pipe = load_pipeline(
             device_id=0,
             cpu_offload=False,
@@ -112,9 +119,21 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertEqual(FakeVAE.load_kwargs["subfolder"], "vae")
         self.assertEqual(FakeVAE.load_kwargs["torch_dtype"], "float32")
         self.assertEqual(FakePipeline.load_args, (MODEL_ID,))
-        self.assertEqual(FakePipeline.load_kwargs["torch_dtype"], "bfloat16")
+        self.assertEqual(FakePipeline.load_kwargs["torch_dtype"], "float16")
         pipe.to.assert_called_once_with("cuda:0")
         pipe.enable_model_cpu_offload.assert_not_called()
+
+    def test_explicit_bfloat16_is_preserved(self):
+        load_pipeline(
+            device_id=0,
+            cpu_offload=False,
+            vae_tiling=False,
+            dtype_name="bfloat16",
+            torch_module=FakeTorch,
+            autoencoder_class=FakeVAE,
+            pipeline_class=FakePipeline,
+        )
+        self.assertEqual(FakePipeline.load_kwargs["torch_dtype"], "bfloat16")
 
     def test_cpu_offload_and_vae_tiling(self):
         pipe = load_pipeline(
@@ -128,6 +147,20 @@ class WanDiffusersDemoTests(unittest.TestCase):
         pipe.enable_model_cpu_offload.assert_called_once_with(gpu_id=1)
         pipe.to.assert_not_called()
         pipe.vae.enable_tiling.assert_called_once_with()
+
+    def test_balanced_device_map_does_not_enable_cpu_offload(self):
+        pipe = load_pipeline(
+            device_id=0,
+            cpu_offload=False,
+            vae_tiling=False,
+            balanced_device_map=True,
+            torch_module=FakeTorch,
+            autoencoder_class=FakeVAE,
+            pipeline_class=FakePipeline,
+        )
+        self.assertEqual(FakePipeline.load_kwargs["device_map"], "balanced")
+        pipe.enable_model_cpu_offload.assert_not_called()
+        pipe.to.assert_not_called()
 
     def test_generation_arguments_are_forwarded(self):
         args = build_parser().parse_args([])

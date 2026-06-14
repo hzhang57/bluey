@@ -35,9 +35,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="5bit2v_output.mp4")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument(
+        "--dtype",
+        choices=("auto", "bfloat16", "float16"),
+        default="auto",
+        help="Transformer dtype. Auto uses BF16 when supported and FP16 otherwise.",
+    )
+    placement = parser.add_mutually_exclusive_group()
+    placement.add_argument(
         "--cpu-offload",
         action="store_true",
         help="Use Diffusers model CPU offload instead of placing the whole pipeline on CUDA.",
+    )
+    placement.add_argument(
+        "--balanced-device-map",
+        action="store_true",
+        help="Distribute pipeline components across all available GPUs.",
     )
     parser.add_argument(
         "--vae-tiling",
@@ -68,10 +80,22 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--prompt must not be empty")
 
 
+def resolve_transformer_dtype(torch_module: Any, dtype_name: str) -> tuple[Any, str]:
+    if dtype_name == "auto":
+        bf16_supported = (
+            hasattr(torch_module.cuda, "is_bf16_supported")
+            and torch_module.cuda.is_bf16_supported()
+        )
+        dtype_name = "bfloat16" if bf16_supported else "float16"
+    return getattr(torch_module, dtype_name), dtype_name
+
+
 def load_pipeline(
     device_id: int,
     cpu_offload: bool,
     vae_tiling: bool,
+    dtype_name: str = "auto",
+    balanced_device_map: bool = False,
     torch_module: Any | None = None,
     autoencoder_class: Any | None = None,
     pipeline_class: Any | None = None,
@@ -93,22 +117,49 @@ def load_pipeline(
         )
 
     device = f"cuda:{device_id}"
+    transformer_dtype, resolved_dtype_name = resolve_transformer_dtype(
+        torch_module, dtype_name
+    )
+    dtype_label = {"bfloat16": "BF16", "float16": "FP16"}[resolved_dtype_name]
+    print(
+        f"[load] CUDA devices={torch_module.cuda.device_count()}, "
+        f"transformer dtype={dtype_label}.",
+        flush=True,
+    )
+    if resolved_dtype_name == "float16":
+        print(
+            "[load] Using FP16 because this GPU has no native BF16 support. "
+            "Use an Ampere-or-newer GPU for the reference BF16 path.",
+            flush=True,
+        )
     print(f"[load] Loading FP32 Wan VAE from {MODEL_ID}...", flush=True)
     vae = autoencoder_class.from_pretrained(
         MODEL_ID,
         subfolder="vae",
         torch_dtype=torch_module.float32,
     )
-    print(f"[load] Loading BF16 WanPipeline from {MODEL_ID}...", flush=True)
-    pipe = pipeline_class.from_pretrained(
-        MODEL_ID,
-        vae=vae,
-        torch_dtype=torch_module.bfloat16,
+    print(
+        f"[load] Loading {dtype_label} WanPipeline from {MODEL_ID}...",
+        flush=True,
     )
+    pipeline_kwargs = {
+        "vae": vae,
+        "torch_dtype": transformer_dtype,
+    }
+    if balanced_device_map:
+        pipeline_kwargs["device_map"] = "balanced"
+    pipe = pipeline_class.from_pretrained(MODEL_ID, **pipeline_kwargs)
 
     if vae_tiling and hasattr(pipe.vae, "enable_tiling"):
         pipe.vae.enable_tiling()
-    if cpu_offload:
+    if balanced_device_map:
+        print(
+            "[load] Using balanced device placement across available GPUs.",
+            flush=True,
+        )
+        if hasattr(pipe, "hf_device_map"):
+            print(f"[load] Device map: {pipe.hf_device_map}", flush=True)
+    elif cpu_offload:
         print(f"[load] Enabling model CPU offload to {device}.", flush=True)
         pipe.enable_model_cpu_offload(gpu_id=device_id)
     else:
@@ -126,6 +177,12 @@ def generate(args: argparse.Namespace, pipe: Any, torch_module: Any | None = Non
     print(
         f"[generate] {args.num_frames} frames, {args.width}x{args.height}, "
         f"{args.num_inference_steps} steps, guidance={args.guidance_scale}",
+        flush=True,
+    )
+    forwards_per_step = 2 if args.guidance_scale > 1.0 else 1
+    print(
+        f"[generate] CFG requires {forwards_per_step} Transformer forward(s) "
+        f"per step, {args.num_inference_steps * forwards_per_step} total.",
         flush=True,
     )
     return pipe(
@@ -150,6 +207,8 @@ def main() -> None:
         device_id=args.device_id,
         cpu_offload=args.cpu_offload,
         vae_tiling=args.vae_tiling,
+        dtype_name=args.dtype,
+        balanced_device_map=args.balanced_device_map,
     )
     output = generate(args, pipe)
     output_path = Path(args.output)
