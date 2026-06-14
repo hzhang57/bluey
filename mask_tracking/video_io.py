@@ -107,3 +107,14 @@ def make_comparison(
 ) -> np.ndarray:
     mask_rgb = mask_to_rgb(masks)
     return np.concatenate([source, generated, mask_rgb, edited], axis=2)
+
+
+def make_colorization_comparison(
+    original: np.ndarray,
+    grayscale: np.ndarray,
+    generated: np.ndarray,
+    target_color_score: np.ndarray,
+) -> np.ndarray:
+    return np.concatenate(
+        [original, grayscale, generated, score_to_rgb(target_color_score)], axis=2
+    )

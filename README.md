@@ -11,6 +11,35 @@ Wan-AI/Wan2.2-TI2V-5B-Diffusers
 No detector, segmentation model, optical flow, tracker, or Wan2.2 GitHub clone
 is used.
 
+## Global Color-Control Prerequisite
+
+Before testing object-level painting, use the grayscale colorization demo to
+check whether the model accepts a simpler global color instruction:
+
+```bash
+python run_gray_colorizing.py \
+  --video input.mp4 \
+  --color magenta \
+  --strength 0.60 \
+  --guide-scale 5.0 \
+  --seed 42 \
+  --output-dir outputs/gray_magenta
+```
+
+The demo converts the source clip to three-channel Rec.709 grayscale before
+SDEdit. It then asks Wan to apply the requested color palette throughout the
+whole scene. Supported colors are `magenta`, `cyan`, `lime`, `red`, `blue`,
+and `yellow`; use `--prompt` to override the generated instruction while
+keeping `--color` as the evaluation target.
+
+The outputs include the original color reference, actual grayscale model
+input, raw generation, target-color score and mask videos, denoise diagnostics,
+a four-panel comparison, lossless arrays, and a manifest. Coverage excludes
+input pixels below `--minimum-luma 0.05`, and a pixel matches when saturation
+is at least `--saturation-threshold 0.20` and circular hue distance is within
+`--hue-tolerance-degrees 30`. This is a global editability diagnostic; its
+color mask is not evidence of segmentation or tracking.
+
 ## Setup
 
 On a Kaggle CUDA notebook:

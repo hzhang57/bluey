@@ -4,6 +4,135 @@ import cv2
 import numpy as np
 
 
+TARGET_COLORS = {
+    "magenta": (255, 0, 255),
+    "cyan": (0, 255, 255),
+    "lime": (0, 255, 0),
+    "red": (255, 0, 0),
+    "blue": (0, 0, 255),
+    "yellow": (255, 255, 0),
+}
+
+
+def rec709_luma(video: np.ndarray) -> np.ndarray:
+    if video.ndim != 4 or video.shape[-1] != 3:
+        raise ValueError("video must have shape [F,H,W,3]")
+    values = video.astype(np.float32)
+    return (
+        0.2126 * values[..., 0]
+        + 0.7152 * values[..., 1]
+        + 0.0722 * values[..., 2]
+    )
+
+
+def to_grayscale_rec709(video: np.ndarray) -> np.ndarray:
+    luma = np.clip(np.rint(rec709_luma(video)), 0, 255).astype(np.uint8)
+    return np.repeat(luma[..., None], 3, axis=-1)
+
+
+def build_global_color_prompt(color: str) -> str:
+    if color not in TARGET_COLORS:
+        raise ValueError(f"Unsupported target color: {color}")
+    return (
+        f"Colorize the entire grayscale video using a vivid {color} color palette.\n"
+        f"Apply {color} color throughout the whole visible scene in every frame.\n"
+        "Preserve the original scene layout, motion, camera movement, timing, "
+        "and brightness structure.\n"
+        "Do not leave the visible scene grayscale."
+    )
+
+
+def target_color_analysis(
+    grayscale_input: np.ndarray,
+    generated: np.ndarray,
+    color: str,
+    saturation_threshold: float = 0.20,
+    hue_tolerance_degrees: float = 30.0,
+    minimum_luma: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    _validate_video_pair(grayscale_input, generated)
+    if color not in TARGET_COLORS:
+        raise ValueError(f"Unsupported target color: {color}")
+    if not 0.0 <= saturation_threshold <= 1.0:
+        raise ValueError("saturation_threshold must be in [0, 1]")
+    if not 0.0 <= hue_tolerance_degrees <= 180.0:
+        raise ValueError("hue_tolerance_degrees must be in [0, 180]")
+    if not 0.0 <= minimum_luma <= 1.0:
+        raise ValueError("minimum_luma must be in [0, 1]")
+
+    generated_hsv = _rgb_video_to_hsv(generated)
+    grayscale_hsv = _rgb_video_to_hsv(grayscale_input)
+    target_rgb = np.array(TARGET_COLORS[color], dtype=np.uint8).reshape(1, 1, 3)
+    target_hsv = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2HSV).reshape(3)
+    target_hue_degrees = float(target_hsv[0]) * 2.0
+    generated_hue_degrees = generated_hsv[..., 0] * 2.0
+    raw_distance = np.abs(generated_hue_degrees - target_hue_degrees)
+    hue_distance = np.minimum(raw_distance, 360.0 - raw_distance)
+    saturation = generated_hsv[..., 1] / 255.0
+    grayscale_saturation = grayscale_hsv[..., 1] / 255.0
+    eligible = (rec709_luma(grayscale_input) / 255.0) >= minimum_luma
+    hue_similarity = 1.0 - np.clip(hue_distance / 180.0, 0.0, 1.0)
+    score = (hue_similarity * saturation * eligible).astype(np.float32)
+    selected = (
+        eligible
+        & (saturation >= saturation_threshold)
+        & (hue_distance <= hue_tolerance_degrees)
+    )
+    mask = selected.astype(np.uint8) * 255
+
+    eligible_per_frame = eligible.reshape(len(eligible), -1).sum(axis=1)
+    selected_per_frame = selected.reshape(len(selected), -1).sum(axis=1)
+    coverage_per_frame = np.divide(
+        selected_per_frame,
+        eligible_per_frame,
+        out=np.zeros_like(selected_per_frame, dtype=np.float64),
+        where=eligible_per_frame > 0,
+    )
+    generated_luma = rec709_luma(generated) / 255.0
+    grayscale_luma = rec709_luma(grayscale_input) / 255.0
+    generated_f = generated.astype(np.float32) / 255.0
+    grayscale_f = grayscale_input.astype(np.float32) / 255.0
+    eligible_count = int(eligible.sum())
+
+    def eligible_mean(values: np.ndarray) -> float:
+        return float(values[eligible].mean()) if eligible_count else 0.0
+
+    metrics = {
+        "target_color": color,
+        "target_rgb": list(TARGET_COLORS[color]),
+        "target_hsv": {
+            "hue_degrees": target_hue_degrees,
+            "saturation": float(target_hsv[1]) / 255.0,
+            "value": float(target_hsv[2]) / 255.0,
+        },
+        "target_hue_degrees": target_hue_degrees,
+        "saturation_threshold": saturation_threshold,
+        "hue_tolerance_degrees": hue_tolerance_degrees,
+        "minimum_luma": minimum_luma,
+        "eligible_pixel_fraction": float(eligible.mean()),
+        "mean_generated_saturation": eligible_mean(saturation),
+        "mean_input_saturation": eligible_mean(grayscale_saturation),
+        "mean_saturation_gain": eligible_mean(saturation - grayscale_saturation),
+        "mean_target_color_score": eligible_mean(score),
+        "target_color_coverage": (
+            float(selected.sum() / eligible_count) if eligible_count else 0.0
+        ),
+        "target_color_coverage_std": float(coverage_per_frame.std()),
+        "target_color_coverage_per_frame": [
+            float(value) for value in coverage_per_frame
+        ],
+        "luma_mae": eligible_mean(np.abs(generated_luma - grayscale_luma)),
+        "rgb_mae": eligible_mean(np.mean(np.abs(generated_f - grayscale_f), axis=-1)),
+    }
+    return mask, score, metrics
+
+
+def _rgb_video_to_hsv(video: np.ndarray) -> np.ndarray:
+    return np.stack(
+        [cv2.cvtColor(frame, cv2.COLOR_RGB2HSV) for frame in video]
+    ).astype(np.float32)
+
+
 def relative_whitening_score(source: np.ndarray, generated: np.ndarray) -> np.ndarray:
     """Score pixels that became brighter, less colorful, and different."""
     _validate_video_pair(source, generated)
