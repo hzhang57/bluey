@@ -75,7 +75,7 @@ class GrayColorCliTests(unittest.TestCase):
         self.assertEqual(args.saturation_threshold, 0.20)
         self.assertEqual(args.hue_tolerance_degrees, 30.0)
         self.assertEqual(args.minimum_luma, 0.05)
-        self.assertEqual(args.wan_repo, "/kaggle/working/Wan2.2")
+        self.assertIsNone(args.wan_repo)
         self.assertEqual(args.wan_checkpoint, "/kaggle/working/Wan2.2-TI2V-5B")
 
     def test_prompt_override_and_color_are_independent(self):

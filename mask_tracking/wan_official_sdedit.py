@@ -5,6 +5,7 @@ import gc
 import importlib
 import importlib.metadata
 import math
+import os
 import sys
 import types
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from typing import Any, Callable
 import numpy as np
 
 MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B"
+DEFAULT_WAN_REPO = Path("/kaggle/working/Wan2.2")
+WAN_REPO_MARKER = Path("wan/textimage2video.py")
 
 
 @dataclass
@@ -24,6 +27,70 @@ class OfficialSDEditResult:
 
 
 SnapshotCallback = Callable[[str, np.ndarray, dict[str, Any]], None]
+
+
+def resolve_official_wan_repo(
+    wan_repo: str | Path | None,
+    search_roots: tuple[Path, ...] | None = None,
+) -> Path:
+    if wan_repo is not None:
+        explicit = Path(wan_repo).expanduser().resolve()
+        if (explicit / WAN_REPO_MARKER).is_file():
+            return explicit
+        raise FileNotFoundError(
+            f"{explicit} is not a Wan2.2 GitHub checkout; missing "
+            f"{WAN_REPO_MARKER}.\n"
+            "Clone it in Kaggle with:\n"
+            "!git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git "
+            "/kaggle/working/Wan2.2\n"
+            "Or pass the existing checkout with --wan-repo /path/to/Wan2.2"
+        )
+
+    roots = search_roots or (Path.cwd(), Path("/kaggle/working"))
+    candidates = []
+    environment_repo = os.environ.get("WAN_REPO")
+    if environment_repo:
+        candidates.append(Path(environment_repo))
+    candidates.extend(
+        [
+            DEFAULT_WAN_REPO,
+            Path.cwd() / "Wan2.2",
+            Path.cwd().parent / "Wan2.2",
+        ]
+    )
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(
+                marker.parent.parent
+                for marker in root.glob("*/wan/textimage2video.py")
+            )
+            candidates.extend(
+                marker.parent.parent
+                for marker in root.glob("*/*/wan/textimage2video.py")
+            )
+
+    checked = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in checked:
+            continue
+        checked.append(resolved)
+        if (resolved / WAN_REPO_MARKER).is_file():
+            print(
+                f"[official preflight] Auto-detected Wan2.2 repo: {resolved}",
+                flush=True,
+            )
+            return resolved
+
+    checked_text = "\n".join(f"- {path}" for path in checked)
+    raise FileNotFoundError(
+        "Could not find an official Wan2.2 GitHub checkout. Checked:\n"
+        f"{checked_text}\n"
+        "Clone it in Kaggle with:\n"
+        "!git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git "
+        "/kaggle/working/Wan2.2\n"
+        "Then rerun, or pass --wan-repo /path/to/Wan2.2."
+    )
 
 
 def require_official_flash_attention(attention_module: Any) -> None:
@@ -132,19 +199,15 @@ class WanOfficialFullVideoSDEdit:
 
     def __init__(
         self,
-        wan_repo: str | Path,
+        wan_repo: str | Path | None,
         checkpoint_dir: str | Path,
         max_sequence_length: int = 512,
         device_id: int = 0,
     ):
         import torch
 
-        repo = Path(wan_repo).expanduser().resolve()
+        repo = resolve_official_wan_repo(wan_repo)
         checkpoint = Path(checkpoint_dir).expanduser().resolve()
-        if not (repo / "wan" / "textimage2video.py").is_file():
-            raise FileNotFoundError(
-                f"{repo} is not a Wan2.2 GitHub checkout; clone Wan-Video/Wan2.2"
-            )
         if not checkpoint.is_dir():
             raise FileNotFoundError(
                 f"Official Wan checkpoint directory does not exist: {checkpoint}"

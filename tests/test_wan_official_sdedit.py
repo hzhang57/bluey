@@ -10,6 +10,7 @@ from mask_tracking.wan_official_sdedit import (
     load_official_wan_components,
     pad_timestep_for_official_model,
     require_official_flash_attention,
+    resolve_official_wan_repo,
     strength_to_start_index,
 )
 
@@ -32,6 +33,23 @@ class OfficialWanTests(unittest.TestCase):
             FLASH_ATTN_2_AVAILABLE=True, FLASH_ATTN_3_AVAILABLE=False
         )
         require_official_flash_attention(available)
+
+    def test_repo_resolver_finds_nested_kaggle_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "some-clone"
+            marker = checkout / "wan" / "textimage2video.py"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("", encoding="utf-8")
+            self.assertEqual(
+                resolve_official_wan_repo(None, search_roots=(root,)),
+                checkout.resolve(),
+            )
+
+    def test_repo_resolver_gives_clone_command_for_invalid_explicit_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(FileNotFoundError, "git clone --depth 1"):
+                resolve_official_wan_repo(Path(directory) / "missing")
 
     def test_minimal_loader_skips_official_package_init(self):
         with tempfile.TemporaryDirectory() as directory:

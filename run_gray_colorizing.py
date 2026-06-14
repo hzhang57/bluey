@@ -15,7 +15,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Probe global text-driven color control from a grayscale video."
     )
     parser.add_argument("--video", required=True)
-    parser.add_argument("--wan-repo", default="/kaggle/working/Wan2.2")
+    parser.add_argument(
+        "--wan-repo",
+        default=None,
+        help="Official Wan2.2 checkout. Auto-detected from Kaggle paths when omitted.",
+    )
     parser.add_argument(
         "--wan-checkpoint", default="/kaggle/working/Wan2.2-TI2V-5B"
     )

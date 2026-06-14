@@ -23,7 +23,6 @@ non-Diffusers `Wan-AI/Wan2.2-TI2V-5B` checkpoint:
 ```bash
 python run_gray_colorizing.py \
   --video input.mp4 \
-  --wan-repo /kaggle/working/Wan2.2 \
   --wan-checkpoint /kaggle/working/Wan2.2-TI2V-5B \
   --color magenta \
   --strength 0.60 \
@@ -88,7 +87,9 @@ restart the Kaggle session before inference.
 
 The official checkpoint is distinct from
 `Wan-AI/Wan2.2-TI2V-5B-Diffusers`. Setting an optional `HF_TOKEN` increases
-download rate limits.
+download rate limits. `run_gray_colorizing.py` auto-detects the official
+checkout under common Kaggle paths. Use `--wan-repo /path/to/Wan2.2` only when
+the checkout is elsewhere.
 
 Warnings about Kaggle's unused RAPIDS packages such as `dask-cuda`, `cudf`,
 `cuml`, `numba-cuda`, or `cuda-core` do not affect this experiment. Starting a
