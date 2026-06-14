@@ -1,6 +1,6 @@
 torch>=2.4.0
 diffusers>=0.38.0
-transformers
+transformers>=4.48,<5
 accelerate
 sentencepiece
 ftfy

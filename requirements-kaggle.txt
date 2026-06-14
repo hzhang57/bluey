@@ -1,6 +1,8 @@
-# Kaggle already provides torch, transformers, accelerate, NumPy, and OpenCV.
-# Install only the missing Wan pipeline package without upgrading the CUDA stack:
+# Keep Kaggle's torch/CUDA stack, but pin the Wan-compatible text stack:
 diffusers==0.38.0
+transformers==4.57.3
+huggingface-hub>=0.34.0,<1.0
+tokenizers>=0.22.0,<=0.23.0
 safetensors>=0.8.0
 sentencepiece
 ftfy

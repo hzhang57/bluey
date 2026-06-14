@@ -69,6 +69,7 @@ class GrayColorCliTests(unittest.TestCase):
         args = build_parser().parse_args(["--video", "input.mp4"])
         self.assertEqual(args.color, "magenta")
         self.assertEqual(args.strength, 0.60)
+        self.assertEqual(args.frame_num, 25)
         self.assertEqual(args.guide_scale, 5.0)
         self.assertEqual(args.saturation_threshold, 0.20)
         self.assertEqual(args.hue_tolerance_degrees, 30.0)

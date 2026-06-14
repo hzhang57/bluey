@@ -36,6 +36,20 @@ def check_pipeline_dependencies() -> None:
         )
 
 
+def validate_transformers_version(version: str | None = None) -> str:
+    version = version or importlib.metadata.version("transformers")
+    try:
+        major = int(version.split(".", 1)[0])
+    except ValueError as error:
+        raise RuntimeError(f"Could not parse Transformers version: {version}") from error
+    if major >= 5:
+        raise RuntimeError(
+            "Wan2.2 UMT5 prompt encoding requires Transformers 4.x in this project; "
+            f"found {version}. Install `transformers==4.57.3` and restart the runtime."
+        )
+    return version
+
+
 def noise_strength_to_start_idx(strength: float, steps: int) -> int:
     if not 0.0 < strength <= 1.0:
         raise ValueError("strength must be in (0, 1]")
@@ -166,17 +180,38 @@ def validate_text_only_latent_contract(transformer: Any, latent: Any) -> dict[st
     }
 
 
+def repair_umt5_encoder_embeddings(text_encoder: Any) -> dict[str, Any]:
+    """Bind the encoder token embedding to the checkpoint's shared.weight."""
+    shared = getattr(text_encoder, "shared", None)
+    encoder = getattr(text_encoder, "encoder", None)
+    current = getattr(encoder, "embed_tokens", None) if encoder is not None else None
+    if shared is None or encoder is None:
+        return {"applicable": False, "rebound": False}
+    rebound = current is not shared
+    encoder.embed_tokens = shared
+    shared_weight = getattr(shared, "weight", None)
+    return {
+        "applicable": True,
+        "rebound": rebound,
+        "shared_weight_shape": (
+            list(shared_weight.shape) if shared_weight is not None else None
+        ),
+    }
+
+
 def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=None) -> Any:
     if vae_class is None or pipeline_class is None:
         try:
             from diffusers import AutoencoderKLWan, WanPipeline
         except ImportError as error:
             raise ImportError("Install the project requirements before loading Wan2.2") from error
+        validate_transformers_version()
         vae_class, pipeline_class = AutoencoderKLWan, WanPipeline
 
     vae = vae_class.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch_module.float16)
     pipe = pipeline_class.from_pretrained(MODEL_ID, vae=vae, torch_dtype=torch_module.bfloat16)
     pipe.register_to_config(expand_timesteps=True)
+    embedding_repair = repair_umt5_encoder_embeddings(pipe.text_encoder)
     transformer_device = torch_module.device("cuda:0")
     vae_device = torch_module.device("cuda:1" if torch_module.cuda.device_count() > 1 else "cuda:0")
     text_device = torch_module.device("cpu")
@@ -184,11 +219,13 @@ def load_diffusers_pipeline(torch_module: Any, vae_class=None, pipeline_class=No
     pipe.vae.to("cpu", dtype=torch_module.float16)
     pipe.text_encoder.to(text_device)
     pipe._vae_target_device = vae_device
+    pipe._text_embedding_repair = embedding_repair
     if hasattr(pipe.vae, "enable_slicing"):
         pipe.vae.enable_slicing()
     print(
         f"[load] transformer={transformer_device} text_encoder={text_device} "
-        f"vae=cpu (staged for {vae_device})",
+        f"vae=cpu (staged for {vae_device}) "
+        f"text_embedding_rebound={embedding_repair['rebound']}",
         flush=True,
     )
     return pipe
@@ -512,10 +549,17 @@ class WanFullVideoSDEdit:
         if embedding_difference is not None:
             print(
                 "[cfg] text embedding difference: "
+                f"norm={embedding_difference['norm']:.6f} "
                 f"relative_norm={embedding_difference['relative_norm']:.6f} "
                 f"cosine_similarity={embedding_difference['cosine_similarity']:.6f}",
                 flush=True,
             )
+            if embedding_difference["relative_norm"] < 1e-6:
+                raise RuntimeError(
+                    "Positive and negative prompt embeddings are identical or zero. "
+                    "Text conditioning is unusable; verify the UMT5 shared.weight "
+                    "embedding loaded correctly before denoising."
+                )
 
         vae_device = getattr(pipe, "_vae_target_device", transformer_device)
         pipe.vae.to(vae_device, dtype=torch.float16)
@@ -717,6 +761,9 @@ class WanFullVideoSDEdit:
                     "negative_prompt": negative_prompt,
                     "transformer_forwards_per_step": 2 if cfg_enabled else 1,
                     "embedding_difference": embedding_difference,
+                    "text_embedding_repair": getattr(
+                        pipe, "_text_embedding_repair", None
+                    ),
                     "prediction_difference_summary": cfg_difference_summary,
                     "total_transformer_forwards": (
                         len(timesteps) * (2 if cfg_enabled else 1)

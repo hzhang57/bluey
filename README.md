@@ -32,6 +32,13 @@ whole scene. Supported colors are `magenta`, `cyan`, `lime`, `red`, `blue`,
 and `yellow`; use `--prompt` to override the generated instruction while
 keeping `--color` as the evaluation target.
 
+The grayscale demo defaults to 25 frames because a 49-frame self-attention
+forward exceeds a 15 GiB T4. The loader also repairs a Transformers
+compatibility issue where the official UMT5 checkpoint stores `shared.weight`
+but some versions create a separate missing `encoder.embed_tokens.weight`.
+The run stops before denoising if positive and empty prompt embeddings are
+identical or zero.
+
 The outputs include the original color reference, actual grayscale model
 input, raw generation, target-color score and mask videos, denoise diagnostics,
 a four-panel comparison, lossless arrays, and a manifest. Coverage excludes
@@ -48,6 +55,11 @@ On a Kaggle CUDA notebook:
 %cd /kaggle/working/bluey
 !pip install --no-deps -r requirements-kaggle.txt
 ```
+
+Restart the Kaggle runtime after installation so the pinned
+`transformers==4.57.3` is used. Transformers 5.x can load the official UMT5
+checkpoint with a missing token-embedding alias, producing identical zero
+embeddings for positive and empty prompts.
 
 Before running, set **Notebook options > Accelerator > GPU**. Verify that the
 environment is not using a CPU-only PyTorch build and that the required

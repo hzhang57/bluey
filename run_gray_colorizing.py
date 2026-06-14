@@ -24,7 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="outputs/gray_colorizing")
     parser.add_argument("--strength", type=float, default=0.60)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--frame-num", type=int, default=49)
+    parser.add_argument(
+        "--frame-num",
+        type=int,
+        default=25,
+        help="Number of frames; 25 is the dual-T4-safe default and must have form 4n+1.",
+    )
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument(
         "--size",

@@ -24,10 +24,12 @@ from mask_tracking.wan_sdedit import (
     denoise_step_count,
     load_diffusers_pipeline,
     noise_strength_to_start_idx,
+    repair_umt5_encoder_embeddings,
     scheduler_noise_diagnostics,
     should_save_denoise_snapshot,
     validate_text_only_latent_contract,
     validate_official_scheduler,
+    validate_transformers_version,
 )
 from run_mask_tracking import build_parser, validate_args
 
@@ -143,12 +145,28 @@ class DiffusersWrapperTests(unittest.TestCase):
     def test_fixed_model_id(self):
         self.assertEqual(MODEL_ID, "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 
+    def test_repairs_umt5_encoder_embedding_alias(self):
+        shared = SimpleNamespace(weight=np.zeros((3, 4)))
+        stale = object()
+        text_encoder = SimpleNamespace(
+            shared=shared, encoder=SimpleNamespace(embed_tokens=stale)
+        )
+        diagnostics = repair_umt5_encoder_embeddings(text_encoder)
+        self.assertIs(text_encoder.encoder.embed_tokens, shared)
+        self.assertTrue(diagnostics["rebound"])
+        self.assertEqual(diagnostics["shared_weight_shape"], [3, 4])
+
     def test_pipeline_dependency_preflight(self):
         with patch("mask_tracking.wan_sdedit.importlib.util.find_spec", return_value=object()):
             check_pipeline_dependencies()
         with patch("mask_tracking.wan_sdedit.importlib.util.find_spec", return_value=None):
             with self.assertRaisesRegex(ImportError, "pip install ftfy"):
                 check_pipeline_dependencies()
+
+    def test_rejects_transformers_v5_for_wan_prompt_encoding(self):
+        self.assertEqual(validate_transformers_version("4.57.3"), "4.57.3")
+        with self.assertRaisesRegex(RuntimeError, "transformers==4.57.3"):
+            validate_transformers_version("5.0.0")
 
     def test_strength_maps_to_scheduler_start(self):
         self.assertEqual(noise_strength_to_start_idx(0.5, 30), 15)
