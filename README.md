@@ -23,7 +23,6 @@ non-Diffusers `Wan-AI/Wan2.2-TI2V-5B` checkpoint:
 ```bash
 python run_gray_colorizing.py \
   --video input.mp4 \
-  --wan-checkpoint /kaggle/working/Wan2.2-TI2V-5B \
   --color magenta \
   --strength 0.60 \
   --guide-scale 5.0 \
@@ -67,8 +66,6 @@ On a Kaggle CUDA notebook:
 !pip install --no-deps -r requirements-kaggle.txt
 !pip install flash-attn --no-build-isolation --no-deps
 !git clone --depth 1 https://github.com/Wan-Video/Wan2.2.git /kaggle/working/Wan2.2
-!huggingface-cli download Wan-AI/Wan2.2-TI2V-5B \
-  --local-dir /kaggle/working/Wan2.2-TI2V-5B
 ```
 
 Restart the Kaggle runtime after installation. The project pins the
@@ -89,7 +86,16 @@ The official checkpoint is distinct from
 `Wan-AI/Wan2.2-TI2V-5B-Diffusers`. Setting an optional `HF_TOKEN` increases
 download rate limits. `run_gray_colorizing.py` auto-detects the official
 checkout under common Kaggle paths. Use `--wan-repo /path/to/Wan2.2` only when
-the checkout is elsewhere.
+the checkout is elsewhere. The official checkpoint is also auto-detected; when
+missing, the script downloads approximately 30 GB to
+`/kaggle/working/Wan2.2-TI2V-5B`. Use `--no-auto-download-checkpoint` to require
+a manually downloaded checkpoint instead. If the earlier Diffusers model has
+filled the Kaggle disk, remove its unused cache before downloading the official
+checkpoint:
+
+```bash
+!rm -rf /root/.cache/huggingface/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers
+```
 
 Warnings about Kaggle's unused RAPIDS packages such as `dask-cuda`, `cudf`,
 `cuml`, `numba-cuda`, or `cuda-core` do not affect this experiment. Starting a

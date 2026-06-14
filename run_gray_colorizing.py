@@ -21,7 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Official Wan2.2 checkout. Auto-detected from Kaggle paths when omitted.",
     )
     parser.add_argument(
-        "--wan-checkpoint", default="/kaggle/working/Wan2.2-TI2V-5B"
+        "--wan-checkpoint",
+        default=None,
+        help="Official non-Diffusers checkpoint. Auto-detected or downloaded when omitted.",
+    )
+    parser.add_argument(
+        "--no-auto-download-checkpoint",
+        action="store_false",
+        dest="auto_download_checkpoint",
+        help="Require an existing official checkpoint instead of downloading it.",
     )
     parser.add_argument("--color", choices=tuple(TARGET_COLORS), default="magenta")
     parser.add_argument(
@@ -59,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable saving noisy.mp4 and periodic denoise-step videos.",
     )
     parser.add_argument("--denoise-save-every", type=int, default=10)
-    parser.set_defaults(save_denoise_steps=True)
+    parser.set_defaults(save_denoise_steps=True, auto_download_checkpoint=True)
     return parser
 
 
@@ -156,6 +164,7 @@ def main() -> None:
         args.wan_repo,
         args.wan_checkpoint,
         max_sequence_length=args.max_sequence_length,
+        auto_download_checkpoint=args.auto_download_checkpoint,
     )
     fps = args.fps or source_fps
     snapshot_records = []

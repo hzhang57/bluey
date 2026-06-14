@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import math
 import os
+import shutil
 import sys
 import types
 from dataclasses import dataclass
@@ -16,7 +17,13 @@ import numpy as np
 
 MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B"
 DEFAULT_WAN_REPO = Path("/kaggle/working/Wan2.2")
+DEFAULT_WAN_CHECKPOINT = Path("/kaggle/working/Wan2.2-TI2V-5B")
 WAN_REPO_MARKER = Path("wan/textimage2video.py")
+WAN_CHECKPOINT_MARKERS = (
+    Path("models_t5_umt5-xxl-enc-bf16.pth"),
+    Path("Wan2.2_VAE.pth"),
+)
+MIN_CHECKPOINT_DOWNLOAD_FREE_BYTES = 32 * 1024**3
 
 
 @dataclass
@@ -46,7 +53,11 @@ def resolve_official_wan_repo(
             "Or pass the existing checkout with --wan-repo /path/to/Wan2.2"
         )
 
-    roots = search_roots or (Path.cwd(), Path("/kaggle/working"))
+    roots = (
+        search_roots
+        if search_roots is not None
+        else (Path.cwd(), Path("/kaggle/working"))
+    )
     candidates = []
     environment_repo = os.environ.get("WAN_REPO")
     if environment_repo:
@@ -91,6 +102,122 @@ def resolve_official_wan_repo(
         "/kaggle/working/Wan2.2\n"
         "Then rerun, or pass --wan-repo /path/to/Wan2.2."
     )
+
+
+def _is_official_wan_checkpoint(path: Path) -> bool:
+    return all((path / marker).is_file() for marker in WAN_CHECKPOINT_MARKERS)
+
+
+def resolve_official_wan_checkpoint(
+    checkpoint_dir: str | Path | None,
+    auto_download: bool = True,
+    search_roots: tuple[Path, ...] | None = None,
+    snapshot_download_fn: Callable[..., str] | None = None,
+) -> Path:
+    roots = (
+        search_roots
+        if search_roots is not None
+        else (Path.cwd(), Path("/kaggle/working"))
+    )
+    candidates = []
+    environment_checkpoint = os.environ.get("WAN_CHECKPOINT")
+    if checkpoint_dir is not None:
+        candidates.append(Path(checkpoint_dir))
+    if environment_checkpoint:
+        candidates.append(Path(environment_checkpoint))
+    candidates.extend(
+        [
+            DEFAULT_WAN_CHECKPOINT,
+            Path.cwd() / "Wan2.2-TI2V-5B",
+            Path.cwd().parent / "Wan2.2-TI2V-5B",
+        ]
+    )
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(
+                marker.parent
+                for marker in root.glob("*/models_t5_umt5-xxl-enc-bf16.pth")
+            )
+            candidates.extend(
+                marker.parent
+                for marker in root.glob("*/*/models_t5_umt5-xxl-enc-bf16.pth")
+            )
+
+    checked = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in checked:
+            continue
+        checked.append(resolved)
+        if _is_official_wan_checkpoint(resolved):
+            print(
+                f"[official preflight] Found Wan2.2 checkpoint: {resolved}",
+                flush=True,
+            )
+            return resolved
+
+    destination = (
+        Path(checkpoint_dir).expanduser().resolve()
+        if checkpoint_dir is not None
+        else DEFAULT_WAN_CHECKPOINT
+    )
+    if not auto_download:
+        checked_text = "\n".join(f"- {path}" for path in checked)
+        raise FileNotFoundError(
+            "Could not find the official non-Diffusers Wan2.2 TI2V checkpoint. "
+            f"Checked:\n{checked_text}\n"
+            "Download it in Kaggle with:\n"
+            "!huggingface-cli download Wan-AI/Wan2.2-TI2V-5B "
+            "--local-dir /kaggle/working/Wan2.2-TI2V-5B\n"
+            "Then rerun, or pass --wan-checkpoint /path/to/Wan2.2-TI2V-5B."
+        )
+
+    if snapshot_download_fn is None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(destination.parent).free
+        if free_bytes < MIN_CHECKPOINT_DOWNLOAD_FREE_BYTES:
+            free_gib = free_bytes / 1024**3
+            raise RuntimeError(
+                f"Only {free_gib:.1f} GiB is free under {destination.parent}; "
+                "the official Wan2.2 checkpoint download needs about 32 GiB. "
+                "On Kaggle, remove the unused Diffusers cache "
+                "`/root/.cache/huggingface/hub/"
+                "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers` or start a fresh "
+                "session, then rerun."
+            )
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as error:
+            raise ImportError(
+                "Automatic checkpoint download requires huggingface-hub. "
+                "Install requirements-kaggle.txt or pass "
+                "--no-auto-download-checkpoint after downloading manually."
+            ) from error
+        snapshot_download_fn = snapshot_download
+
+    print(
+        f"[official preflight] Checkpoint not found; downloading {MODEL_ID} "
+        f"(about 30 GB) to {destination}...",
+        flush=True,
+    )
+    downloaded = Path(
+        snapshot_download_fn(
+            repo_id=MODEL_ID,
+            local_dir=str(destination),
+            token=os.environ.get("HF_TOKEN"),
+        )
+    ).expanduser().resolve()
+    if not _is_official_wan_checkpoint(downloaded):
+        missing = [
+            str(marker)
+            for marker in WAN_CHECKPOINT_MARKERS
+            if not (downloaded / marker).is_file()
+        ]
+        raise FileNotFoundError(
+            f"Downloaded checkpoint at {downloaded} is incomplete; missing: "
+            f"{', '.join(missing)}"
+        )
+    return downloaded
 
 
 def require_official_flash_attention(attention_module: Any) -> None:
@@ -200,18 +327,17 @@ class WanOfficialFullVideoSDEdit:
     def __init__(
         self,
         wan_repo: str | Path | None,
-        checkpoint_dir: str | Path,
+        checkpoint_dir: str | Path | None,
         max_sequence_length: int = 512,
         device_id: int = 0,
+        auto_download_checkpoint: bool = True,
     ):
         import torch
 
         repo = resolve_official_wan_repo(wan_repo)
-        checkpoint = Path(checkpoint_dir).expanduser().resolve()
-        if not checkpoint.is_dir():
-            raise FileNotFoundError(
-                f"Official Wan checkpoint directory does not exist: {checkpoint}"
-            )
+        checkpoint = resolve_official_wan_checkpoint(
+            checkpoint_dir, auto_download=auto_download_checkpoint
+        )
         if str(repo) not in sys.path:
             sys.path.insert(0, str(repo))
 

@@ -10,6 +10,7 @@ from mask_tracking.wan_official_sdedit import (
     load_official_wan_components,
     pad_timestep_for_official_model,
     require_official_flash_attention,
+    resolve_official_wan_checkpoint,
     resolve_official_wan_repo,
     strength_to_start_index,
 )
@@ -50,6 +51,49 @@ class OfficialWanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(FileNotFoundError, "git clone --depth 1"):
                 resolve_official_wan_repo(Path(directory) / "missing")
+
+    def test_checkpoint_resolver_finds_existing_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoint"
+            checkpoint.mkdir()
+            for name in ("models_t5_umt5-xxl-enc-bf16.pth", "Wan2.2_VAE.pth"):
+                (checkpoint / name).write_text("", encoding="utf-8")
+            self.assertEqual(
+                resolve_official_wan_checkpoint(
+                    None, auto_download=False, search_roots=(Path(directory),)
+                ),
+                checkpoint.resolve(),
+            )
+
+    def test_checkpoint_resolver_downloads_when_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "checkpoint"
+
+            def fake_download(**kwargs):
+                self.assertEqual(kwargs["repo_id"], MODEL_ID)
+                self.assertEqual(Path(kwargs["local_dir"]), destination.resolve())
+                destination.mkdir()
+                for name in ("models_t5_umt5-xxl-enc-bf16.pth", "Wan2.2_VAE.pth"):
+                    (destination / name).write_text("", encoding="utf-8")
+                return str(destination)
+
+            self.assertEqual(
+                resolve_official_wan_checkpoint(
+                    destination,
+                    search_roots=(),
+                    snapshot_download_fn=fake_download,
+                ),
+                destination.resolve(),
+            )
+
+    def test_checkpoint_resolver_can_disable_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(FileNotFoundError, "huggingface-cli download"):
+                resolve_official_wan_checkpoint(
+                    Path(directory) / "missing",
+                    auto_download=False,
+                    search_roots=(),
+                )
 
     def test_minimal_loader_skips_official_package_init(self):
         with tempfile.TemporaryDirectory() as directory:
