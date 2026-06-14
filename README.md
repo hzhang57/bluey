@@ -87,11 +87,12 @@ The official checkpoint is distinct from
 download rate limits. `run_gray_colorizing.py` auto-detects the official
 checkout under common Kaggle paths. Use `--wan-repo /path/to/Wan2.2` only when
 the checkout is elsewhere. The official checkpoint is also auto-detected; when
-missing, the script downloads approximately 30 GB to
-`/kaggle/working/Wan2.2-TI2V-5B`. Use `--no-auto-download-checkpoint` to require
-a manually downloaded checkpoint instead. If the earlier Diffusers model has
-filled the Kaggle disk, remove its unused cache before downloading the official
-checkpoint:
+missing, the script downloads 31.85 GiB to the Hugging Face cache, normally
+under `/root/.cache/huggingface/hub`. This is intentional because Kaggle's
+`/kaggle/working` mount may be only 20 GiB. Use `--wan-checkpoint` only for a
+location with enough space, or `--no-auto-download-checkpoint` to require an
+existing checkpoint. If the earlier Diffusers model has filled the root cache,
+remove it before downloading the official checkpoint:
 
 ```bash
 !rm -rf /root/.cache/huggingface/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers

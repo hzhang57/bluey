@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from mask_tracking.wan_official_sdedit import (
     MODEL_ID,
+    default_huggingface_hub_cache,
     load_official_wan_components,
     pad_timestep_for_official_model,
     require_official_flash_attention,
@@ -85,6 +86,36 @@ class OfficialWanTests(unittest.TestCase):
                 ),
                 destination.resolve(),
             )
+
+    def test_checkpoint_resolver_uses_hf_cache_when_path_is_omitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "cache-snapshot"
+
+            def fake_download(**kwargs):
+                self.assertEqual(kwargs["repo_id"], MODEL_ID)
+                self.assertNotIn("local_dir", kwargs)
+                checkpoint.mkdir()
+                for name in ("models_t5_umt5-xxl-enc-bf16.pth", "Wan2.2_VAE.pth"):
+                    (checkpoint / name).write_text("", encoding="utf-8")
+                return str(checkpoint)
+
+            with patch.dict(
+                "os.environ",
+                {"HF_HUB_CACHE": str(Path(directory) / "hub")},
+                clear=False,
+            ):
+                self.assertEqual(
+                    resolve_official_wan_checkpoint(
+                        None,
+                        search_roots=(),
+                        snapshot_download_fn=fake_download,
+                    ),
+                    checkpoint.resolve(),
+                )
+
+    def test_default_hf_cache_honors_hf_hub_cache(self):
+        with patch.dict("os.environ", {"HF_HUB_CACHE": "/tmp/custom-hub"}):
+            self.assertEqual(default_huggingface_hub_cache(), Path("/tmp/custom-hub"))
 
     def test_checkpoint_resolver_can_disable_download(self):
         with tempfile.TemporaryDirectory() as directory:

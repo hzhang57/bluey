@@ -23,7 +23,7 @@ WAN_CHECKPOINT_MARKERS = (
     Path("models_t5_umt5-xxl-enc-bf16.pth"),
     Path("Wan2.2_VAE.pth"),
 )
-MIN_CHECKPOINT_DOWNLOAD_FREE_BYTES = 32 * 1024**3
+MIN_CHECKPOINT_DOWNLOAD_FREE_BYTES = 33 * 1024**3
 
 
 @dataclass
@@ -108,6 +108,16 @@ def _is_official_wan_checkpoint(path: Path) -> bool:
     return all((path / marker).is_file() for marker in WAN_CHECKPOINT_MARKERS)
 
 
+def default_huggingface_hub_cache() -> Path:
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]).expanduser() / "hub"
+    if os.environ.get("XDG_CACHE_HOME"):
+        return Path(os.environ["XDG_CACHE_HOME"]).expanduser() / "huggingface" / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def resolve_official_wan_checkpoint(
     checkpoint_dir: str | Path | None,
     auto_download: bool = True,
@@ -131,6 +141,12 @@ def resolve_official_wan_checkpoint(
             Path.cwd() / "Wan2.2-TI2V-5B",
             Path.cwd().parent / "Wan2.2-TI2V-5B",
         ]
+    )
+    hub_cache = default_huggingface_hub_cache()
+    candidates.extend(
+        hub_cache.glob("models--Wan-AI--Wan2.2-TI2V-5B/snapshots/*")
+        if hub_cache.is_dir()
+        else ()
     )
     for root in roots:
         if root.is_dir():
@@ -157,9 +173,7 @@ def resolve_official_wan_checkpoint(
             return resolved
 
     destination = (
-        Path(checkpoint_dir).expanduser().resolve()
-        if checkpoint_dir is not None
-        else DEFAULT_WAN_CHECKPOINT
+        Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir is not None else None
     )
     if not auto_download:
         checked_text = "\n".join(f"- {path}" for path in checked)
@@ -167,19 +181,19 @@ def resolve_official_wan_checkpoint(
             "Could not find the official non-Diffusers Wan2.2 TI2V checkpoint. "
             f"Checked:\n{checked_text}\n"
             "Download it in Kaggle with:\n"
-            "!huggingface-cli download Wan-AI/Wan2.2-TI2V-5B "
-            "--local-dir /kaggle/working/Wan2.2-TI2V-5B\n"
+            "!huggingface-cli download Wan-AI/Wan2.2-TI2V-5B\n"
             "Then rerun, or pass --wan-checkpoint /path/to/Wan2.2-TI2V-5B."
         )
 
     if snapshot_download_fn is None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        free_bytes = shutil.disk_usage(destination.parent).free
+        download_filesystem = destination.parent if destination is not None else hub_cache
+        download_filesystem.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(download_filesystem).free
         if free_bytes < MIN_CHECKPOINT_DOWNLOAD_FREE_BYTES:
             free_gib = free_bytes / 1024**3
             raise RuntimeError(
-                f"Only {free_gib:.1f} GiB is free under {destination.parent}; "
-                "the official Wan2.2 checkpoint download needs about 32 GiB. "
+                f"Only {free_gib:.1f} GiB is free under {download_filesystem}; "
+                "the official Wan2.2 checkpoint download needs about 33 GiB. "
                 "On Kaggle, remove the unused Diffusers cache "
                 "`/root/.cache/huggingface/hub/"
                 "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers` or start a fresh "
@@ -195,17 +209,24 @@ def resolve_official_wan_checkpoint(
             ) from error
         snapshot_download_fn = snapshot_download
 
+    destination_description = (
+        str(destination)
+        if destination is not None
+        else f"the Hugging Face cache under {hub_cache}"
+    )
     print(
         f"[official preflight] Checkpoint not found; downloading {MODEL_ID} "
-        f"(about 30 GB) to {destination}...",
+        f"(31.85 GiB) to {destination_description}...",
         flush=True,
     )
+    download_kwargs = {
+        "repo_id": MODEL_ID,
+        "token": os.environ.get("HF_TOKEN"),
+    }
+    if destination is not None:
+        download_kwargs["local_dir"] = str(destination)
     downloaded = Path(
-        snapshot_download_fn(
-            repo_id=MODEL_ID,
-            local_dir=str(destination),
-            token=os.environ.get("HF_TOKEN"),
-        )
+        snapshot_download_fn(**download_kwargs)
     ).expanduser().resolve()
     if not _is_official_wan_checkpoint(downloaded):
         missing = [
