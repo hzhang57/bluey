@@ -90,6 +90,10 @@ def resolve_transformer_dtype(torch_module: Any, dtype_name: str) -> tuple[Any, 
     return getattr(torch_module, dtype_name), dtype_name
 
 
+def module_device(module: Any) -> Any:
+    return next(module.parameters()).device
+
+
 def load_pipeline(
     device_id: int,
     cpu_offload: bool,
@@ -159,13 +163,12 @@ def load_pipeline(
         )
         if hasattr(pipe, "hf_device_map"):
             print(f"[load] Device map: {pipe.hf_device_map}", flush=True)
-        execution_device = getattr(pipe, "_execution_device", device)
+        vae_device = module_device(pipe.vae)
         print(
-            f"[load] Moving the externally loaded FP32 VAE to "
-            f"{execution_device} for final decode.",
+            f"[load] Actual VAE decode device={vae_device}; the VAE will stay "
+            f"there and final latents will be moved to it.",
             flush=True,
         )
-        pipe.vae.to(execution_device)
     elif cpu_offload:
         print(f"[load] Enabling model CPU offload to {device}.", flush=True)
         pipe.enable_model_cpu_offload(gpu_id=device_id)
@@ -175,7 +178,35 @@ def load_pipeline(
     return pipe
 
 
-def generate(args: argparse.Namespace, pipe: Any, torch_module: Any | None = None) -> Any:
+def decode_balanced_latents(pipe: Any, latents: Any, torch_module: Any) -> Any:
+    vae_device = module_device(pipe.vae)
+    print(
+        f"[decode] Moving latent from {latents.device} to VAE on {vae_device}.",
+        flush=True,
+    )
+    latents = latents.to(device=vae_device, dtype=pipe.vae.dtype)
+    latents_mean = (
+        torch_module.tensor(pipe.vae.config.latents_mean)
+        .view(1, pipe.vae.config.z_dim, 1, 1, 1)
+        .to(latents.device, latents.dtype)
+    )
+    latents_std = (
+        1.0
+        / torch_module.tensor(pipe.vae.config.latents_std)
+        .view(1, pipe.vae.config.z_dim, 1, 1, 1)
+        .to(latents.device, latents.dtype)
+    )
+    latents = latents / latents_std + latents_mean
+    video = pipe.vae.decode(latents, return_dict=False)[0]
+    return pipe.video_processor.postprocess_video(video, output_type="np")
+
+
+def generate(
+    args: argparse.Namespace,
+    pipe: Any,
+    torch_module: Any | None = None,
+    balanced_decoder: Any | None = None,
+) -> Any:
     if torch_module is None:
         import torch as torch_module
 
@@ -192,7 +223,7 @@ def generate(args: argparse.Namespace, pipe: Any, torch_module: Any | None = Non
         f"per step, {args.num_inference_steps * forwards_per_step} total.",
         flush=True,
     )
-    return pipe(
+    pipeline_kwargs = dict(
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         height=args.height,
@@ -201,7 +232,19 @@ def generate(args: argparse.Namespace, pipe: Any, torch_module: Any | None = Non
         guidance_scale=args.guidance_scale,
         num_inference_steps=args.num_inference_steps,
         generator=generator,
-    ).frames[0]
+    )
+    if not args.balanced_device_map:
+        return pipe(**pipeline_kwargs).frames[0]
+
+    latents = pipe(**pipeline_kwargs, output_type="latent").frames
+    latent_path = Path(args.output).with_suffix(".latent.pt")
+    latent_path.parent.mkdir(parents=True, exist_ok=True)
+    torch_module.save(latents.detach().cpu(), latent_path)
+    print(f"[decode] Saved denoised latent to {latent_path.resolve()}.", flush=True)
+    if hasattr(torch_module.cuda, "empty_cache"):
+        torch_module.cuda.empty_cache()
+    decoder = balanced_decoder or decode_balanced_latents
+    return decoder(pipe, latents, torch_module)[0]
 
 
 def main() -> None:

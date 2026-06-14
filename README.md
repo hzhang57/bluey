@@ -87,9 +87,10 @@ python run_wan_ti2v.py \
 ```
 
 Balanced placement distributes components across GPUs, but it does not make a
-single Transformer forward run in parallel. The externally loaded FP32 VAE is
-placed on the pipeline execution device so its weights and the final CUDA
-latents are on the same device during decode.
+single Transformer forward run in parallel. The balanced path finishes
+denoising first, saves `<output>.latent.pt`, and moves the much smaller latent
+to the VAE's mapped GPU for decoding. It does not move the FP32 VAE between
+GPUs.
 
 Wan requires `num_frames` to have the form `4n+1`, such as 21, 81, or 121.
 The model is downloaded to the Hugging Face cache automatically.

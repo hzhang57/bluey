@@ -30,12 +30,26 @@ class FakeGenerator:
         return self
 
 
+class FakeDevice:
+    def __init__(self, value):
+        self.value = value
+
+    def __str__(self):
+        return self.value
+
+
+class FakeParameter:
+    def __init__(self, device):
+        self.device = FakeDevice(device)
+
+
 class FakeTorch:
     cuda = FakeCuda()
     float32 = "float32"
     float16 = "float16"
     bfloat16 = "bfloat16"
     Generator = FakeGenerator
+    save = MagicMock()
 
 
 class FakeVAE:
@@ -45,6 +59,7 @@ class FakeVAE:
         cls.load_kwargs = kwargs
         instance = cls()
         instance.to = MagicMock()
+        instance.parameters = MagicMock(return_value=iter([FakeParameter("cpu")]))
         return instance
 
 
@@ -60,6 +75,11 @@ class FakePipeline:
         instance.to = MagicMock()
         if kwargs.get("device_map") == "balanced":
             instance._execution_device = "cuda:1"
+            instance.hf_device_map = {
+                "text_encoder": 0,
+                "transformer": 1,
+                "vae": 1,
+            }
         return instance
 
 
@@ -152,7 +172,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
         pipe.to.assert_not_called()
         pipe.vae.enable_tiling.assert_called_once_with()
 
-    def test_balanced_device_map_places_vae_on_execution_device(self):
+    def test_balanced_device_map_does_not_move_vae(self):
         pipe = load_pipeline(
             device_id=0,
             cpu_offload=False,
@@ -163,7 +183,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
             pipeline_class=FakePipeline,
         )
         self.assertEqual(FakePipeline.load_kwargs["device_map"], "balanced")
-        pipe.vae.to.assert_called_once_with("cuda:1")
+        pipe.vae.to.assert_not_called()
         pipe.enable_model_cpu_offload.assert_not_called()
         pipe.to.assert_not_called()
 
@@ -180,6 +200,28 @@ class WanDiffusersDemoTests(unittest.TestCase):
         self.assertEqual(kwargs["width"], 1280)
         self.assertEqual(kwargs["generator"].device, "cuda:0")
         self.assertEqual(kwargs["generator"].seed, 42)
+
+    def test_balanced_generation_returns_latents_then_decodes(self):
+        args = build_parser().parse_args(
+            ["--balanced-device-map", "--output", "/tmp/balanced.mp4"]
+        )
+        latent = MagicMock()
+        latent.device = "cuda:0"
+        latent.detach.return_value.cpu.return_value = "cpu latent"
+        pipe = MagicMock(return_value=SimpleNamespace(frames=latent))
+        decoder = MagicMock(return_value=[["generated video"]])
+
+        result = generate(
+            args,
+            pipe,
+            torch_module=FakeTorch,
+            balanced_decoder=decoder,
+        )
+
+        self.assertEqual(result, ["generated video"])
+        self.assertEqual(pipe.call_args.kwargs["output_type"], "latent")
+        FakeTorch.save.assert_called_with(latent.detach().cpu(), Path("/tmp/balanced.latent.pt"))
+        decoder.assert_called_once_with(pipe, latent, FakeTorch)
 
 
 if __name__ == "__main__":
