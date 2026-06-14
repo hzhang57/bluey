@@ -43,7 +43,9 @@ class FakeVAE:
     def from_pretrained(cls, *args, **kwargs):
         cls.load_args = args
         cls.load_kwargs = kwargs
-        return cls()
+        instance = cls()
+        instance.to = MagicMock()
+        return instance
 
 
 class FakePipeline:
@@ -56,6 +58,8 @@ class FakePipeline:
         instance.vae.enable_tiling = MagicMock()
         instance.enable_model_cpu_offload = MagicMock()
         instance.to = MagicMock()
+        if kwargs.get("device_map") == "balanced":
+            instance._execution_device = "cuda:1"
         return instance
 
 
@@ -148,7 +152,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
         pipe.to.assert_not_called()
         pipe.vae.enable_tiling.assert_called_once_with()
 
-    def test_balanced_device_map_does_not_enable_cpu_offload(self):
+    def test_balanced_device_map_places_vae_on_execution_device(self):
         pipe = load_pipeline(
             device_id=0,
             cpu_offload=False,
@@ -159,6 +163,7 @@ class WanDiffusersDemoTests(unittest.TestCase):
             pipeline_class=FakePipeline,
         )
         self.assertEqual(FakePipeline.load_kwargs["device_map"], "balanced")
+        pipe.vae.to.assert_called_once_with("cuda:1")
         pipe.enable_model_cpu_offload.assert_not_called()
         pipe.to.assert_not_called()
 

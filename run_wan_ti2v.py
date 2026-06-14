@@ -159,6 +159,13 @@ def load_pipeline(
         )
         if hasattr(pipe, "hf_device_map"):
             print(f"[load] Device map: {pipe.hf_device_map}", flush=True)
+        execution_device = getattr(pipe, "_execution_device", device)
+        print(
+            f"[load] Moving the externally loaded FP32 VAE to "
+            f"{execution_device} for final decode.",
+            flush=True,
+        )
+        pipe.vae.to(execution_device)
     elif cpu_offload:
         print(f"[load] Enabling model CPU offload to {device}.", flush=True)
         pipe.enable_model_cpu_offload(gpu_id=device_id)
