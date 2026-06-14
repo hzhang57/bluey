@@ -15,10 +15,26 @@ output = pipe(...).frames[0]
 
 ## Run
 
+For a normal Python environment:
+
 ```bash
 pip install -r requirements.txt
 python run_wan_ti2v.py
 ```
+
+For Kaggle, keep its preinstalled Torch, CUDA, NumPy, and RAPIDS packages
+unchanged:
+
+```bash
+pip install --no-deps -r requirements-kaggle.txt
+python run_wan_ti2v.py
+```
+
+The `dask-cuda`, `cudf`, `cuml`, `numba-cuda`, and `ucxx` dependency conflict
+messages come from Kaggle's unused preinstalled RAPIDS environment. They do
+not indicate a Wan loading failure. Using the Kaggle command above prevents
+pip from replacing that CUDA stack. Restart the Kaggle session once after
+installing if Python had already imported Diffusers or Transformers.
 
 The default parameters match the reference example: `1280x704`, 121 frames,
 50 inference steps, guidance scale 5.0, and 24 FPS.

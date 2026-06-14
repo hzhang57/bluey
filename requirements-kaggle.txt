@@ -1,0 +1,12 @@
+# Install with `pip install --no-deps -r requirements-kaggle.txt`.
+# Kaggle already provides Torch, CUDA, NumPy, and the RAPIDS stack.
+diffusers==0.38.0
+transformers==4.57.6
+tokenizers>=0.22.0,<0.24.0
+accelerate>=1.1.1
+huggingface-hub==0.36.2
+safetensors==0.8.0
+sentencepiece
+ftfy==6.3.1
+imageio[ffmpeg]
+imageio-ffmpeg

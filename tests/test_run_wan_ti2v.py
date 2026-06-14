@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -54,6 +55,31 @@ class FakePipeline:
 
 
 class WanDiffusersDemoTests(unittest.TestCase):
+    def test_kaggle_requirements_preserve_preinstalled_cuda_stack(self):
+        requirements_path = Path(__file__).parents[1] / "requirements-kaggle.txt"
+        requirements = [
+            line.strip().lower()
+            for line in requirements_path.read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        protected_prefixes = (
+            "torch",
+            "torchvision",
+            "numpy",
+            "cuda-",
+            "numba",
+            "dask-cuda",
+            "cudf",
+            "cuml",
+            "ucxx",
+            "distributed-ucxx",
+        )
+        self.assertFalse(
+            any(item.startswith(protected_prefixes) for item in requirements)
+        )
+        self.assertIn("diffusers==0.38.0", requirements)
+        self.assertIn("transformers==4.57.6", requirements)
+
     def test_cli_defaults_match_reference(self):
         args = build_parser().parse_args([])
         self.assertEqual(args.height, 704)
