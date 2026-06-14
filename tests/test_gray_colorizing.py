@@ -14,7 +14,7 @@ from mask_tracking.analysis import (
     target_color_analysis,
     to_grayscale_rec709,
 )
-from run_gray_colorizing import build_parser, main, validate_args
+from run_gray_colorizing import build_parser, main, pad_video_for_wan, validate_args
 
 
 class GrayColorAnalysisTests(unittest.TestCase):
@@ -69,7 +69,7 @@ class GrayColorCliTests(unittest.TestCase):
         args = build_parser().parse_args(["--video", "input.mp4"])
         self.assertEqual(args.color, "magenta")
         self.assertEqual(args.strength, 0.60)
-        self.assertEqual(args.frame_num, 25)
+        self.assertEqual(args.frame_num, 20)
         self.assertEqual(args.guide_scale, 5.0)
         self.assertEqual(args.saturation_threshold, 0.20)
         self.assertEqual(args.hue_tolerance_degrees, 30.0)
@@ -88,6 +88,14 @@ class GrayColorCliTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "--saturation-threshold"):
             validate_args(args)
+
+    def test_twenty_frames_are_padded_to_twenty_one_for_wan(self):
+        video = np.arange(20 * 2 * 2 * 3, dtype=np.uint8).reshape(20, 2, 2, 3)
+        padded, count = pad_video_for_wan(video)
+        self.assertEqual(count, 1)
+        self.assertEqual(len(padded), 21)
+        self.assertTrue(np.array_equal(padded[:20], video))
+        self.assertTrue(np.array_equal(padded[20], video[-1]))
 
     def test_main_passes_grayscale_video_and_writes_manifest(self):
         original = np.zeros((5, 4, 4, 3), dtype=np.uint8)
@@ -161,6 +169,7 @@ class GrayColorCliTests(unittest.TestCase):
         self.assertIn("not a segmentation", manifest["research_warning"])
         self.assertEqual(manifest["outputs"]["grayscale_input"], "grayscale_input.mp4")
         self.assertEqual(manifest["outputs"]["lossless_arrays"], "colorization_arrays.npz")
+        self.assertEqual(manifest["preprocessing"]["wan_temporal_padding_frames"], 0)
         written_names = {Path(call.args[0]).name for call in write_video.call_args_list}
         self.assertEqual(
             written_names,

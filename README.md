@@ -32,8 +32,11 @@ whole scene. Supported colors are `magenta`, `cyan`, `lime`, `red`, `blue`,
 and `yellow`; use `--prompt` to override the generated instruction while
 keeping `--color` as the evaluation target.
 
-The grayscale demo defaults to 25 frames because a 49-frame self-attention
-forward exceeds a 15 GiB T4. The loader also repairs a Transformers
+The grayscale demo outputs 20 frames by default because a 49-frame
+self-attention forward exceeds a 15 GiB T4. Wan's temporal VAE requires
+`4n+1` model-input frames, so the demo internally repeats the final frame once
+to run 21 frames and trims every saved output and metric back to the requested
+20 frames. The loader also repairs a Transformers
 compatibility issue where the official UMT5 checkpoint stores `shared.weight`
 but some versions create a separate missing `encoder.embed_tokens.weight`.
 The run stops before denoising if positive and empty prompt embeddings are

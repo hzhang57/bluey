@@ -15,8 +15,8 @@ def read_video_clip(
     start_frame: int = 0,
     target_fps: float = 24.0,
 ) -> tuple[np.ndarray, float, dict]:
-    if frame_num < 1 or (frame_num - 1) % 4:
-        raise ValueError("--frame-num must have the form 4n+1")
+    if frame_num < 1:
+        raise ValueError("--frame-num must be positive")
     reader = imageio.get_reader(str(path))
     metadata = reader.get_meta_data()
     source_fps = float(metadata.get("fps", 24.0))

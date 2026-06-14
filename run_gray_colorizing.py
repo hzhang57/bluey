@@ -27,8 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-num",
         type=int,
-        default=25,
-        help="Number of frames; 25 is the dual-T4-safe default and must have form 4n+1.",
+        default=20,
+        help="Number of output frames; internally padded to 4n+1 for the Wan VAE.",
     )
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument(
@@ -68,8 +68,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--guide-scale must be positive")
     if args.max_sequence_length < 1:
         raise ValueError("--max-sequence-length must be positive")
-    if args.frame_num < 1 or (args.frame_num - 1) % 4:
-        raise ValueError("--frame-num must have the form 4n+1")
+    if args.frame_num < 1:
+        raise ValueError("--frame-num must be positive")
     if args.start_frame < 0:
         raise ValueError("--start-frame must be non-negative")
     if args.fps <= 0.0:
@@ -84,6 +84,21 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--minimum-luma must be in [0, 1]")
     if args.prompt is not None and not args.prompt.strip():
         raise ValueError("--prompt must contain non-whitespace text")
+
+
+def pad_video_for_wan(video):
+    import numpy as np
+
+    if video.ndim != 4 or video.shape[-1] != 3 or len(video) < 1:
+        raise ValueError("video must have shape [F,H,W,3] with at least one frame")
+    padding = (1 - len(video)) % 4
+    if padding == 0:
+        return video, 0
+    padded = np.concatenate(
+        [video, np.repeat(video[-1:], padding, axis=0)],
+        axis=0,
+    )
+    return padded, padding
 
 
 def main() -> None:
@@ -119,6 +134,7 @@ def main() -> None:
         target_fps=args.fps,
     )
     grayscale = to_grayscale_rec709(original)
+    model_grayscale, model_padding = pad_video_for_wan(grayscale)
     prompt = (
         args.prompt.strip()
         if args.prompt is not None
@@ -135,11 +151,11 @@ def main() -> None:
             relative_path = Path("denoise_steps") / (
                 f"step_{metadata['step']:03d}_timestep_{metadata['timestep']:.4f}.mp4"
             )
-        write_video(output_dir / relative_path, frames, fps)
+        write_video(output_dir / relative_path, frames[: args.frame_num], fps)
         snapshot_records.append({**metadata, "path": str(relative_path)})
 
     generation = pipeline.generate(
-        grayscale,
+        model_grayscale,
         prompt,
         args.strength,
         args.seed,
@@ -150,7 +166,8 @@ def main() -> None:
         snapshot_every=args.denoise_save_every,
         negative_prompt=args.negative_prompt,
     )
-    generated = generation.generated_raw
+    generated = generation.generated_raw[: args.frame_num]
+    vae_roundtrip = generation.vae_roundtrip[: args.frame_num]
     target_mask, target_score, color_metrics = target_color_analysis(
         grayscale,
         generated,
@@ -168,7 +185,7 @@ def main() -> None:
     write_video(output_dir / "generated_raw.mp4", generated, fps)
     write_video(output_dir / "target_color_score.mp4", score_to_rgb(target_score), fps)
     write_video(output_dir / "target_color_mask.mp4", mask_to_rgb(target_mask), fps)
-    write_video(output_dir / "vae_roundtrip.mp4", generation.vae_roundtrip, fps)
+    write_video(output_dir / "vae_roundtrip.mp4", vae_roundtrip, fps)
     write_video(output_dir / "side_by_side.mp4", comparison, fps)
     np.savez_compressed(
         output_dir / "colorization_arrays.npz",
@@ -196,7 +213,14 @@ def main() -> None:
         "target_rgb": list(TARGET_COLORS[args.color]),
         "target_hsv": color_metrics["target_hsv"],
         "parameters": vars(args),
-        "preprocessing": {**preprocessing, "grayscale_conversion": "Rec.709 luma"},
+        "preprocessing": {
+            **preprocessing,
+            "grayscale_conversion": "Rec.709 luma",
+            "requested_output_frames": args.frame_num,
+            "wan_model_input_frames": len(model_grayscale),
+            "wan_temporal_padding_frames": model_padding,
+            "wan_temporal_padding_policy": "repeat final frame, then trim outputs",
+        },
         "outputs": {
             "original_color": "original_color.mp4",
             "grayscale_input": "grayscale_input.mp4",
